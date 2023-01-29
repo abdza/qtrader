@@ -56,10 +56,10 @@ class BuyWindow(QWidget):
 
         self.layout = QVBoxLayout(self)
         top_part = QHBoxLayout(self)
-        top_part.addWidget(self._buy_form_group)
-        top_part.addWidget(self._info_box_group)
-        self.layout.addLayout(top_part)
-        self.layout.addWidget(self._chart_group)
+        top_part.addWidget(self._buy_form_group,2)
+        top_part.addWidget(self._info_box_group,2)
+        self.layout.addLayout(top_part,1)
+        self.layout.addWidget(self._chart_group,5)
     
     def create_buy_form(self):
         self._buy_form_group = QGroupBox("Buy")
@@ -72,7 +72,12 @@ class BuyWindow(QWidget):
         self.r1_text = QLineEdit()
         self.r2_text = QLineEdit()
         self.buy_button = QPushButton("Buy")
-        layout.addRow(QLabel("Ticker: "), self.ticker_text )
+        self.update_button = QPushButton("Update")
+        self.update_button.clicked.connect(self.pressed_update)
+        tickerbox = QHBoxLayout()
+        tickerbox.addWidget(self.ticker_text)
+        tickerbox.addWidget(self.update_button)
+        layout.addRow(QLabel("Ticker: "), tickerbox )
         layout.addRow(QLabel("Setup: "), self.setup_text )
         layout.addRow(QLabel("Price: "), self.price_text )
         layout.addRow(QLabel("Stop Loss: "), self.stop_text )
@@ -91,40 +96,46 @@ class BuyWindow(QWidget):
         layout.addRow(QLabel("52 Week Low: "), self.yearlylow)
         layout.addRow(QLabel("Float: "), self.stockfloat)
         self._info_box_group.setLayout(layout)
-    
-    def create_chart(self):
-        self._chart_group = QGroupBox("Chart")
-        self.chart = QChart()
+
+    @Slot()
+    def pressed_update(self):
+        self.update_chart()
+
+    def update_chart(self):
         acmeSeries = QCandlestickSeries()
-        acmeSeries.setName("Acme Ltd")
+        acmeSeries.setName(self.ticker_text.text())
         acmeSeries.setIncreasingColor(QColor(Qt.green))
         acmeSeries.setDecreasingColor(QColor(Qt.red))
         newYorkTz = pytz.timezone("America/New_York")
         end_date = datetime.now()
         days = 60
         start_date = end_date - timedelta(days=days)
-        candles = yf.download('BBBY',start=start_date,end=end_date,interval='1d',prepost=False)
+        candles = yf.download(self.ticker_text.text().upper(),start=start_date,end=end_date,interval='1d',prepost=False)
         candles['timestamp'] = [ pd.Timestamp(dt) for dt in candles.index.values ]
         categories = []
         print(str(candles))
         print("----------------------------------------------------")
         for idx in range(len(candles)):
             candle = candles.iloc[idx]
-            candlestickSet = QCandlestickSet(candle['Open'],candle['Close'],candle['Low'],candle['High'],candle['timestamp'].timestamp())
+            candlestickSet = QCandlestickSet(candle['Open'],candle['Close'],candle['Low'],candle['High'],QDateTime(candle['timestamp']).toMSecsSinceEpoch())
             acmeSeries.append(candlestickSet)
             categories.append(QDateTime(candle['timestamp']).toString("dd-MM-yyyy"))
 
         print(str(categories))
+        self.chart.removeAllSeries()
         self.chart.addSeries(acmeSeries)
-        self.chart.setTitle("Acme Ltd Historical Data")
-        self.chart.setAnimationOptions(QChart.SeriesAnimations)
         self.chart.createDefaultAxes()
-        axisX = QBarCategoryAxis(self.chart.axes(Qt.Horizontal)[0])
-        axisX.orientation = "Vertical"
-        axisX.setCategories(categories)
-        axisY = QValueAxis(self.chart.axes(Qt.Vertical)[0])
-        axisY.setMax(axisY.max() * 1.01)
-        axisY.setMin(axisY.min() * 0.99)
+        self.chart.axisX().setLabelsAngle(-90)
+        self.chart.axisY().setMax(candles['High'].max() * 1.1)
+        self.chart.axisY().setMin(candles['Low'].min() * 0.9)
+    
+    def create_chart(self):
+        self.ticker_text.setText("BBBY")
+        self._chart_group = QGroupBox("Chart")
+        self.chart = QChart()
+        self.update_chart()
+        self.chart.setTitle("Historical Data")
+        self.chart.setAnimationOptions(QChart.SeriesAnimations)
         self.chart.legend().setVisible(True)
         self.chart.legend().setAlignment(Qt.AlignBottom)
         layout = QVBoxLayout()
