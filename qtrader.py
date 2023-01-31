@@ -80,6 +80,15 @@ class TradeListTable(QTableWidget):
         self.setHorizontalHeaderLabels(self.headers)
         self.setAlternatingRowColors(True)
         self.update_list()
+        header = self.horizontalHeader()
+        header.setSectionResizeMode(0,QHeaderView.ResizeMode.Stretch)
+        header.setSectionResizeMode(1,QHeaderView.ResizeMode.Stretch)
+        header.setSectionResizeMode(2,QHeaderView.ResizeMode.Stretch)
+        header.setSectionResizeMode(3,QHeaderView.ResizeMode.Stretch)
+        header.setSectionResizeMode(4,QHeaderView.ResizeMode.Stretch)
+        header.setSectionResizeMode(5,QHeaderView.ResizeMode.Stretch)
+        header.setSectionResizeMode(6,QHeaderView.ResizeMode.Stretch)
+        header.setSectionResizeMode(7,QHeaderView.ResizeMode.Stretch)
     
     def update_list(self):
         cursor = con.cursor()
