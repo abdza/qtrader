@@ -204,6 +204,29 @@ class BuyWindow(QWidget):
         print("Data:",data)
         cursor.execute(query,data)
         con.commit()
+        query = "insert into trigger(trade_date,ticker,status,trigger_type,price) values (:trade_date,:ticker,:status,:trigger_type,:price)"
+        data = [{"trade_date":datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "ticker":self.ticker_text.text(),
+        "status":"Active",
+        "trigger_type":"Above",
+        "price":float(self.r1_text.text())},
+        {"trade_date":datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "ticker":self.ticker_text.text(),
+        "status":"Active",
+        "trigger_type":"Below",
+        "price":float(self.stop_text.text())}]
+        if len(self.r2_text.text()):
+            data.append(
+        {"trade_date":datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "ticker":self.ticker_text.text(),
+        "status":"Active",
+        "trigger_type":"Above",
+        "price":float(self.r2_text.text())}
+            )
+        print("Query:",query)
+        print("Data:",data)
+        cursor.executemany(query,data)
+        con.commit()
         cursor.close()
         print("Buy ticker ",self.ticker_text.text())
         self.caller.list.update_list()
