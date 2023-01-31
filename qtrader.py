@@ -105,6 +105,10 @@ class TradeListWindow(QWidget):
         self.layout = QVBoxLayout(self)
         self.layout.addWidget(self.list)
 
+        self.timer = QtCore.QTimer()
+        self.timer.timeout.connect(self.checkprice)
+        self.timer.start(60000)
+
         actionrow = QHBoxLayout(self)
         self.ticker_text = QTextEdit()
         self.ticker_text.setMaximumHeight(30)
@@ -114,6 +118,10 @@ class TradeListWindow(QWidget):
         self.buy_button.clicked.connect(self.open_buy)
 
         self.layout.addLayout(actionrow)
+    
+    @Slot()
+    def checkprice(self):
+        print("Checking prices")
 
     @Slot()
     def open_buy(self):
@@ -218,7 +226,10 @@ class BuyWindow(QWidget):
 
     @Slot()
     def update_total_amount(self):
-        self.amount = float(self.amount_text.text())
+        if len(self.amount_text.text()):
+            self.amount = float(self.amount_text.text())
+        else:
+            self.amount = 0
         self.total_amount = self.price * self.amount
         self.total_amount_label.setText(str(self.total_amount))
 
@@ -291,21 +302,27 @@ class BuyWindow(QWidget):
         endloop = len(candles) * -1
         while curend>endloop and candles.iloc[curend]['Low']>self.price:
             curend -= 1
-        self.stop_text.setText(str(candles.iloc[curend]['Low']))
+        if curend>endloop:
+            self.stop_text.setText(str(candles.iloc[curend]['Low']))
+        else:
+            self.stop_text.setText(str(lastcandle['Low']))
         self.price_text.setText(str(self.price))
         self.update_price()
-        if self.price>levels[0]:
+        self.r2_text.setText("")
+        if self.price<levels[-1]:
             i = 0
             while i<len(levels)-1 and self.price>levels[i]:
                 i+=1
             self.r1_text.setText(str(levels[i]))
             j = i + 1
-            self.r2_text.setText("")
             if j<len(levels):
                 while self.price>levels[j] and j<len(levels):
                     j+=1
                 if j>i:
                     self.r2_text.setText(str(levels[j]))
+        else:
+            self.r1_text.setText(str(math.ceil(self.price)))
+
         categories = []
         for idx in range(len(candles)):
             candle = candles.iloc[idx]
