@@ -2,6 +2,7 @@
 import sys
 import pytz
 import math
+import sqlite3
 from PySide6 import QtCore, QtGui
 from PySide6.QtCore import Slot,QPointF,QDateTime
 from PySide6.QtWidgets import *
@@ -11,6 +12,15 @@ import yfinance as yf
 import pandas as pd
 import numpy as np
 from datetime import datetime, timedelta
+
+con = sqlite3.connect("qtrader.db")
+
+def update_table():
+    cursor = con.cursor()
+    cursor.execute("create table if not exists trades(trade_date,ticker,setup,buy_price,sell_price,amount,stop_loss,r1,r2,total,status,pnl)")
+    cursor.execute("create table if not exists trigger(trade_date,ticker,status,trigger_type,price)")
+    con.commit()
+    cursor.close()
 
 def find_levels(candles):
     levels = []
@@ -61,7 +71,6 @@ def candle_size(candle):
     return candle['High'] - candle['Low']
 
 class TradeListTable(QTableWidget):
-
     headers = [
             'Date','Ticker','Setup','Price','Units','Loss Limit','R1','R2'
             ]
@@ -70,6 +79,23 @@ class TradeListTable(QTableWidget):
         self.setColumnCount(len(self.headers))
         self.setHorizontalHeaderLabels(self.headers)
         self.setAlternatingRowColors(True)
+        self.update_list()
+    
+    def update_list(self):
+        cursor = con.cursor()
+        trades = cursor.execute("select * from trades")
+        for trade in trades:
+            curpos = self.rowCount()
+            self.insertRow(curpos)
+            self.setItem(curpos,0,QTableWidgetItem(trade[0]))
+            self.setItem(curpos,1,QTableWidgetItem(trade[1]))
+            self.setItem(curpos,2,QTableWidgetItem(trade[2]))
+            self.setItem(curpos,3,QTableWidgetItem(trade[3]))
+            self.setItem(curpos,4,QTableWidgetItem(trade[5]))
+            self.setItem(curpos,5,QTableWidgetItem(trade[6]))
+            self.setItem(curpos,6,QTableWidgetItem(trade[7]))
+            self.setItem(curpos,7,QTableWidgetItem(trade[8]))
+        cursor.close()
 
 class TradeListWindow(QWidget):
     def __init__(self):
@@ -92,9 +118,12 @@ class TradeListWindow(QWidget):
     @Slot()
     def open_buy(self):
         self.buywindow = BuyWindow()
+        self.buywindow.caller = self
         self.buywindow.resize(800,600)
         self.buywindow.ticker_text.setText(self.ticker_text.toPlainText())
-        self.buywindow.show()
+        self.buywindow.pressed_update()
+        self.buywindow.showMaximized()
+        self.buywindow.activateWindow()
 
 
 class BuyWindow(QWidget):
@@ -122,11 +151,15 @@ class BuyWindow(QWidget):
         self.price_text = QLineEdit()
         self.price_text.textChanged.connect(self.update_price)
         self.stop_text = QLineEdit()
+        self.stop_text.textChanged.connect(self.update_total_amount)
         self.r1_text = QLineEdit()
+        self.r1_text.textChanged.connect(self.update_total_amount)
         self.r2_text = QLineEdit()
+        self.r2_text.textChanged.connect(self.update_total_amount)
         self.amount_text = QLineEdit()
         self.amount_text.textChanged.connect(self.update_total_amount)
         self.buy_button = QPushButton("Buy")
+        self.buy_button.clicked.connect(self.buy_action)
         self.update_button = QPushButton("Update")
         self.update_button.clicked.connect(self.pressed_update)
         tickerbox = QHBoxLayout()
@@ -142,6 +175,32 @@ class BuyWindow(QWidget):
         layout.addRow(QLabel("Amount: "), self.amount_text )
         layout.addRow(self.buy_button)
         self._buy_form_group.setLayout(layout)
+
+    @Slot()
+    def buy_action(self):
+        cursor = con.cursor()
+        query = "insert into trades(trade_date,ticker,setup,buy_price,sell_price,amount,stop_loss,r1,r2,total,status,pnl) values (:trade_date,:ticker,:setup,:buy_price,:sell_price,:amount,:stop_loss,:r1,:r2,:total,:status,:pnl)"
+        data = {"trade_date":datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "ticker":self.ticker_text.text(),
+        "setup":self.setup_text.toPlainText(),
+        "buy_price":self.price_text.text(),
+        "sell_price":None,
+        "amount":self.amount_text.text(),
+        "stop_loss":self.stop_text.text(),
+        "r1":self.r1_text.text(),
+        "r2":self.r2_text.text(),
+        "total":self.total_amount_label.text(),
+        "status":"New",
+        "pnl":None}
+        print("Query:",query)
+        print("Data:",data)
+        cursor.execute(query,data)
+        con.commit()
+        cursor.close()
+        print("Buy ticker ",self.ticker_text.text())
+        self.caller.list.update_list()
+        self.caller.activateWindow()
+        self.close()
 
     @Slot()
     def update_limit(self):
@@ -163,6 +222,24 @@ class BuyWindow(QWidget):
         self.total_amount = self.price * self.amount
         self.total_amount_label.setText(str(self.total_amount))
 
+        if len(self.stop_text.text()):
+            pnl_stop = (self.amount * float(self.stop_text.text())) - self.total_amount
+            self.pnl_stop_label.setText(str(pnl_stop))
+        else:
+            self.pnl_stop_label.setText("0")
+
+        if len(self.r1_text.text()):
+            pnl_r1 = (self.amount * float(self.r1_text.text())) - self.total_amount
+            self.pnl_r1_label.setText(str(pnl_r1))
+        else:
+            self.pnl_r1_label.setText("0")
+
+        if len(self.r2_text.text()):
+            pnl_r2 = (self.amount * float(self.r2_text.text())) - self.total_amount
+            self.pnl_r2_label.setText(str(pnl_r2))
+        else:
+            self.pnl_r2_label.setText("0")
+
     def create_info_box(self):
         self._info_box_group = QGroupBox("Info")
         layout = QFormLayout()
@@ -171,11 +248,17 @@ class BuyWindow(QWidget):
         self.levels_label = QLabel("float")
         self.size_mean_label = QLabel("float")
         self.total_amount_label = QLabel("float")
+        self.pnl_stop_label = QLabel("float")
+        self.pnl_r1_label = QLabel("float")
+        self.pnl_r2_label = QLabel("float")
         layout.addRow(QLabel("Float: "), self.stockfloat_label)
         layout.addRow(QLabel("24h Volume: "), self.volume24h_label)
         layout.addRow(QLabel("Levels: "), self.levels_label)
         layout.addRow(QLabel("Size Mean: "), self.size_mean_label)
         layout.addRow(QLabel("Total Amount: "), self.total_amount_label)
+        layout.addRow(QLabel("Stop Loss P&L: "), self.pnl_stop_label)
+        layout.addRow(QLabel("R1 P&L: "), self.pnl_r1_label)
+        layout.addRow(QLabel("R2 P&L: "), self.pnl_r2_label)
         self._info_box_group.setLayout(layout)
 
     @Slot()
@@ -196,44 +279,45 @@ class BuyWindow(QWidget):
         self.volume24h_label.setText(str(ticker.info['volume24Hr']))
         candles = yf.download(self.ticker_text.text().upper(),start=start_date,end=end_date,interval='1d',prepost=False)
         candles['timestamp'] = [ pd.Timestamp(dt) for dt in candles.index.values ]
+        ymin = candles['Low'].min()
+        ymax = candles['High'].max()
         size_mean,levels = find_levels(candles)
         levels.sort()
         self.levels_label.setText(','.join([ str(x) for x in levels]))
         self.size_mean_label.setText(str(size_mean))
         lastcandle = candles.iloc[-1]
-        secondlast = candles.iloc[-2]
         self.price = lastcandle['Close']
+        curend = -2
+        endloop = len(candles) * -1
+        while curend>endloop and candles.iloc[curend]['Low']>self.price:
+            curend -= 1
+        self.stop_text.setText(str(candles.iloc[curend]['Low']))
         self.price_text.setText(str(self.price))
         self.update_price()
         if self.price>levels[0]:
             i = 0
-            while self.price>levels[i] and i<len(levels):
+            while i<len(levels)-1 and self.price>levels[i]:
                 i+=1
             self.r1_text.setText(str(levels[i]))
             j = i + 1
+            self.r2_text.setText("")
             if j<len(levels):
                 while self.price>levels[j] and j<len(levels):
                     j+=1
                 if j>i:
                     self.r2_text.setText(str(levels[j]))
-        self.stop_text.setText(str(secondlast['Low']))
         categories = []
         for idx in range(len(candles)):
             candle = candles.iloc[idx]
             candlestickSet = QCandlestickSet(candle['Open'],candle['High'],candle['Low'],candle['Close'],QDateTime(candle['timestamp']).toMSecsSinceEpoch())
             acmeSeries.append(candlestickSet)
-            categories.append(QDateTime(candle['timestamp']).toString("dd-MM-yyyy"))
         self.chart.removeAllSeries()
         self.chart.addSeries(acmeSeries)
         self.chart.createDefaultAxes()
         self.chart.axisX().setLabelsAngle(-90)
-        self.chart.axisY().setMax(candles['High'].max() * 1.1)
-        self.chart.axisY().setMin(candles['Low'].min() * 0.9)
+        self.chart.axisY().setMax(ymax * 1.1)
+        self.chart.axisY().setMin(ymin * 0.9)
 
-        xmin = 0
-        xmax = len(categories)
-        ymin = candles['Low'].min()
-        ymax = candles['High'].max()
     
     def create_chart(self):
         self.ticker_text.setText("BBBY")
@@ -251,9 +335,10 @@ class BuyWindow(QWidget):
         self._chart_group.setLayout(layout)
 
 if __name__=="__main__":
+    update_table()
     app = QApplication([])
-    widget = BuyWindow()
+    widget = TradeListWindow()
     widget.resize(800,600)
-    widget.show()
+    widget.showMaximized()
 
     sys.exit(app.exec())
