@@ -3,22 +3,44 @@ import sys
 import pytz
 import math
 import sqlite3
+import ib_insync as ib
 from PySide6 import QtCore, QtGui
 from PySide6.QtCore import Slot,QPointF,QDateTime
 from PySide6.QtWidgets import *
 from PySide6.QtCharts import *
 from PySide6.QtGui import *
 import yfinance as yf
+import yahooquery as yq
 import pandas as pd
 import numpy as np
 from datetime import datetime, timedelta
 
 con = sqlite3.connect("qtrader.db")
+current_ib = ib.IB()
+
+def latest_price(ticker):
+    tickerQuery = yq.Ticker(ticker, asynchronous=False, Timeout=100)
+    if "regularMarketPrice" in tickerQuery.price[ticker]:
+        return tickerQuery.price[ticker]["regularMarketPrice"]
+    else:
+        return 0
+
+def connect_ib():
+    if not current_ib.isConnected():
+        print("Currently not connected")
+        try:
+            current_ib.connect('127.0.0.1', 7777, clientId=1)  # TWS live
+            print("Connected to IB")
+            print("Current positions:")
+            print(current_ib.positions())
+        except Exception as e:
+            print("Fail to connect to IB")
+            print(e)
 
 def update_table():
     cursor = con.cursor()
-    cursor.execute("create table if not exists trades(trade_date,ticker,setup,buy_price,sell_price,amount,stop_loss,r1,r2,total,status,pnl)")
-    cursor.execute("create table if not exists trigger(trade_date,ticker,status,trigger_type,price)")
+    cursor.execute("create table if not exists trades(trade_id INTEGER PRIMARY KEY,trade_date,ticker,setup,buy_price,sell_price,amount,stop_loss,r1,r2,total,status,pnl)")
+    cursor.execute("create table if not exists trigger(trigger_id INTEGER PRIMARY KEY,trade_date,ticker,status,trigger_type,price)")
     con.commit()
     cursor.close()
 
@@ -71,13 +93,10 @@ def candle_size(candle):
     return candle['High'] - candle['Low']
 
 class TradeListTable(QTableWidget):
-    headers = [
-            'Date','Ticker','Setup','Price','Units','Loss Limit','R1','R2'
-            ]
+    headers = ['Date','Ticker','Setup','Price','Units','Loss Limit','R1','R2','P&L']
     def __init__(self):
         super().__init__()
         self.setColumnCount(len(self.headers))
-        self.setHorizontalHeaderLabels(self.headers)
         self.setAlternatingRowColors(True)
         self.update_list()
         header = self.horizontalHeader()
@@ -89,26 +108,33 @@ class TradeListTable(QTableWidget):
         header.setSectionResizeMode(5,QHeaderView.ResizeMode.Stretch)
         header.setSectionResizeMode(6,QHeaderView.ResizeMode.Stretch)
         header.setSectionResizeMode(7,QHeaderView.ResizeMode.Stretch)
+        header.setSectionResizeMode(8,QHeaderView.ResizeMode.Stretch)
+        self.setHorizontalHeaderLabels(self.headers)
     
     def update_list(self):
+        self.setHorizontalHeaderLabels(self.headers)
         cursor = con.cursor()
         trades = cursor.execute("select * from trades")
+        self.clear()
+        self.setRowCount(0)
         for trade in trades:
             curpos = self.rowCount()
             self.insertRow(curpos)
-            self.setItem(curpos,0,QTableWidgetItem(trade[0]))
-            self.setItem(curpos,1,QTableWidgetItem(trade[1]))
-            self.setItem(curpos,2,QTableWidgetItem(trade[2]))
-            self.setItem(curpos,3,QTableWidgetItem(trade[3]))
-            self.setItem(curpos,4,QTableWidgetItem(trade[5]))
-            self.setItem(curpos,5,QTableWidgetItem(trade[6]))
-            self.setItem(curpos,6,QTableWidgetItem(trade[7]))
-            self.setItem(curpos,7,QTableWidgetItem(trade[8]))
+            self.setItem(curpos,0,QTableWidgetItem(trade[1]))
+            self.setItem(curpos,1,QTableWidgetItem(trade[2]))
+            self.setItem(curpos,2,QTableWidgetItem(trade[3]))
+            self.setItem(curpos,3,QTableWidgetItem(trade[4]))
+            self.setItem(curpos,4,QTableWidgetItem(trade[6]))
+            self.setItem(curpos,5,QTableWidgetItem(trade[7]))
+            self.setItem(curpos,6,QTableWidgetItem(trade[8]))
+            self.setItem(curpos,7,QTableWidgetItem(trade[9]))
+            self.setItem(curpos,8,QTableWidgetItem(trade[12]))
         cursor.close()
 
 class TradeListWindow(QWidget):
     def __init__(self):
         super().__init__()
+        connect_ib()
 
         self.list = TradeListTable()
         self.layout = QVBoxLayout(self)
@@ -119,7 +145,7 @@ class TradeListWindow(QWidget):
         self.timer.start(60000)
 
         actionrow = QHBoxLayout(self)
-        self.ticker_text = QTextEdit()
+        self.ticker_text = QTextEdit("BBBY")
         self.ticker_text.setMaximumHeight(30)
         self.buy_button = QPushButton("Buy")
         actionrow.addWidget(self.ticker_text)
@@ -131,6 +157,68 @@ class TradeListWindow(QWidget):
     @Slot()
     def checkprice(self):
         print("Checking prices")
+        cursor = con.cursor()
+        tickers = cursor.execute("select distinct ticker from trigger where status='Active'")
+        cur_pos = current_ib.positions()
+        positions = {}
+        for cps in cur_pos:  # Loop over stock we own according to ib
+            ticker = cps[1].localSymbol
+            amount = cps[2]
+            positions[ticker] = amount
+        for ticker in tickers.fetchall():
+            if ticker[0] in positions:
+                price = latest_price(ticker[0])
+                triggers = cursor.execute("select * from trigger where status='Active' and ticker=:ticker and trigger_type=:trigger_type",
+                {'ticker':ticker[0],'trigger_type':'Above'})
+                for trigger in triggers.fetchall():
+                    if price>trigger[5]:
+                        divide = len(triggers.fetchall())
+                        if divide==0:
+                            divide = 1
+                        to_sell = math.floor(positions[ticker[0]]/divide)
+                        if current_ib.isConnected():
+                            stock = ib.Stock(ticker[0],'SMART','USD')
+                            order = ib.Order()
+                            order.lmtPrice = price
+                            order.orderType = 'LMT'
+                            order.transmit = True
+                            order.totalQuantity = float(to_sell)
+                            order.action = 'SELL'
+                            dps = str(current_ib.reqContractDetails(stock)[0].minTick + 1)[::-1].find('.') - 1
+                            order.lmtPrice = round(order.lmtPrice + current_ib.reqContractDetails(stock)[0].minTick * 2,dps)
+                            sell = current_ib.placeOrder(stock,order)
+                            current_ib.sleep(5)
+                            if sell.orderStatus.status=='Filled' or sell.orderStatus.status=='Submitted':
+                                cursor.execute("update trigger set status='Filled' where trigger_id=:id",{'id':trigger[0]})
+                                status = True
+                            else:
+                                status = False
+                triggers = cursor.execute("select * from trigger where status='Active' and ticker=:ticker and trigger_type=:trigger_type",
+                {'ticker':ticker[0],'trigger_type':'Below'})
+                for trigger in triggers.fetchall():
+                    if price<trigger[5]:
+                        divide = len(triggers.fetchall())
+                        if divide==0:
+                            divide = 1
+                        to_sell = math.floor(positions[ticker[0]]/divide)
+                        if current_ib.isConnected():
+                            stock = ib.Stock(ticker[0],'SMART','USD')
+                            order = ib.Order()
+                            order.lmtPrice = price
+                            order.orderType = 'MKT'
+                            order.transmit = True
+                            order.totalQuantity = float(to_sell)
+                            order.action = 'SELL'
+                            dps = str(current_ib.reqContractDetails(stock)[0].minTick + 1)[::-1].find('.') - 1
+                            order.lmtPrice = round(order.lmtPrice + current_ib.reqContractDetails(stock)[0].minTick * 2,dps)
+                            sell = current_ib.placeOrder(stock,order)
+                            current_ib.sleep(5)
+                            if sell.orderStatus.status=='Filled' or sell.orderStatus.status=='Submitted':
+                                cursor.execute("update trigger set status='Filled' where trigger_id=:id",{'id':trigger[0]})
+                                status = True
+                            else:
+                                status = False
+        cursor.close()
 
     @Slot()
     def open_buy(self):
@@ -195,6 +283,22 @@ class BuyWindow(QWidget):
 
     @Slot()
     def buy_action(self):
+        if current_ib.isConnected():
+            stock = ib.Stock(self.ticker_text.text(),'SMART','USD')
+            order = ib.Order()
+            order.lmtPrice = float(self.price_text.text())
+            order.orderType = 'LMT'
+            order.transmit = True
+            order.totalQuantity = float(self.amount_text.text())
+            order.action = 'BUY'
+            dps = str(current_ib.reqContractDetails(stock)[0].minTick + 1)[::-1].find('.') - 1
+            order.lmtPrice = round(order.lmtPrice + current_ib.reqContractDetails(stock)[0].minTick * 2,dps)
+            bought = current_ib.placeOrder(stock,order)
+            current_ib.sleep(5)
+            if bought.orderStatus.status=='Filled' or bought.orderStatus.status=='Submitted':
+                status = True
+            else:
+                status = False
         cursor = con.cursor()
         query = "insert into trades(trade_date,ticker,setup,buy_price,sell_price,amount,stop_loss,r1,r2,total,status,pnl) values (:trade_date,:ticker,:setup,:buy_price,:sell_price,:amount,:stop_loss,:r1,:r2,:total,:status,:pnl)"
         data = {"trade_date":datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
@@ -329,33 +433,32 @@ class BuyWindow(QWidget):
         self.levels_label.setText(','.join([ str(x) for x in levels]))
         self.size_mean_label.setText(str(size_mean))
         lastcandle = candles.iloc[-1]
-        self.price = lastcandle['Close']
+        self.price = latest_price(self.ticker_text.text().upper())
         curend = -2
         endloop = len(candles) * -1
         while curend>endloop and candles.iloc[curend]['Low']>self.price:
             curend -= 1
         if curend>endloop:
-            self.stop_text.setText(str(candles.iloc[curend]['Low']))
+            self.stop_text.setText(str(round(candles.iloc[curend]['Low'],4)))
         else:
-            self.stop_text.setText(str(lastcandle['Low']))
-        self.price_text.setText(str(self.price))
+            self.stop_text.setText(str(round(lastcandle['Low'],4)))
+        self.price_text.setText(str(round(self.price,4)))
         self.update_price()
         self.r2_text.setText("")
         if self.price<levels[-1]:
             i = 0
             while i<len(levels)-1 and self.price>levels[i]:
                 i+=1
-            self.r1_text.setText(str(levels[i]))
+            self.r1_text.setText(str(round(levels[i],4)))
             j = i + 1
             if j<len(levels):
                 while self.price>levels[j] and j<len(levels):
                     j+=1
                 if j>i:
-                    self.r2_text.setText(str(levels[j]))
+                    self.r2_text.setText(str(round(levels[j],4)))
         else:
             self.r1_text.setText(str(math.ceil(self.price)))
 
-        categories = []
         for idx in range(len(candles)):
             candle = candles.iloc[idx]
             candlestickSet = QCandlestickSet(candle['Open'],candle['High'],candle['Low'],candle['Close'],QDateTime(candle['timestamp']).toMSecsSinceEpoch())
@@ -366,7 +469,6 @@ class BuyWindow(QWidget):
         self.chart.axisX().setLabelsAngle(-90)
         self.chart.axisY().setMax(ymax * 1.1)
         self.chart.axisY().setMin(ymin * 0.9)
-
     
     def create_chart(self):
         self.ticker_text.setText("BBBY")
