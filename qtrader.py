@@ -112,7 +112,6 @@ class TradeListTable(QTableWidget):
         self.setHorizontalHeaderLabels(self.headers)
     
     def update_list(self):
-        self.setHorizontalHeaderLabels(self.headers)
         cursor = con.cursor()
         trades = cursor.execute("select * from trades")
         self.clear()
@@ -129,6 +128,7 @@ class TradeListTable(QTableWidget):
             self.setItem(curpos,6,QTableWidgetItem(trade[8]))
             self.setItem(curpos,7,QTableWidgetItem(trade[9]))
             self.setItem(curpos,8,QTableWidgetItem(trade[12]))
+        self.setHorizontalHeaderLabels(self.headers)
         cursor.close()
 
 class TradeListWindow(QWidget):
@@ -157,26 +157,27 @@ class TradeListWindow(QWidget):
     @Slot()
     def checkprice(self):
         print("Checking prices")
-        cursor = con.cursor()
-        tickers = cursor.execute("select distinct ticker from trigger where status='Active'")
-        cur_pos = current_ib.positions()
-        positions = {}
-        for cps in cur_pos:  # Loop over stock we own according to ib
-            ticker = cps[1].localSymbol
-            amount = cps[2]
-            positions[ticker] = amount
-        for ticker in tickers.fetchall():
-            if ticker[0] in positions:
-                price = latest_price(ticker[0])
-                triggers = cursor.execute("select * from trigger where status='Active' and ticker=:ticker and trigger_type=:trigger_type",
-                {'ticker':ticker[0],'trigger_type':'Above'})
-                for trigger in triggers.fetchall():
-                    if price>trigger[5]:
-                        divide = len(triggers.fetchall())
-                        if divide==0:
-                            divide = 1
-                        to_sell = math.floor(positions[ticker[0]]/divide)
-                        if current_ib.isConnected():
+        if current_ib.isConnected():
+            cursor = con.cursor()
+            tickers = cursor.execute("select distinct ticker from trigger where status='Active'")
+            cur_pos = current_ib.positions()
+            positions = {}
+            for cps in cur_pos:  # Loop over stock we own according to ib
+                ticker = cps[1].localSymbol
+                amount = cps[2]
+                positions[ticker] = amount
+            for ticker in tickers.fetchall():
+                if ticker[0] in positions and positions[ticker[0]]>0:
+                    price = latest_price(ticker[0])
+                    triggers = cursor.execute("select * from trigger where status='Active' and ticker=:ticker and trigger_type=:trigger_type order by price",
+                    {'ticker':ticker[0],'trigger_type':'Above'})
+                    trigger = triggers.fetchone()
+                    if trigger:
+                        if price>trigger[5]:
+                            divide = len(triggers.fetchall())
+                            if divide==0:
+                                divide = 1
+                            to_sell = math.floor(positions[ticker[0]]/divide)
                             stock = ib.Stock(ticker[0],'SMART','USD')
                             order = ib.Order()
                             order.lmtPrice = price
@@ -190,35 +191,40 @@ class TradeListWindow(QWidget):
                             current_ib.sleep(5)
                             if sell.orderStatus.status=='Filled' or sell.orderStatus.status=='Submitted':
                                 cursor.execute("update trigger set status='Filled' where trigger_id=:id",{'id':trigger[0]})
+                                if divide==1:
+                                    cursor.execute("update trigger set status='Cancel' where ticker=:ticker and status='Active'",{'ticker':ticker[0]})
                                 status = True
                             else:
                                 status = False
-                triggers = cursor.execute("select * from trigger where status='Active' and ticker=:ticker and trigger_type=:trigger_type",
-                {'ticker':ticker[0],'trigger_type':'Below'})
-                for trigger in triggers.fetchall():
-                    if price<trigger[5]:
-                        divide = len(triggers.fetchall())
-                        if divide==0:
-                            divide = 1
-                        to_sell = math.floor(positions[ticker[0]]/divide)
-                        if current_ib.isConnected():
-                            stock = ib.Stock(ticker[0],'SMART','USD')
-                            order = ib.Order()
-                            order.lmtPrice = price
-                            order.orderType = 'MKT'
-                            order.transmit = True
-                            order.totalQuantity = float(to_sell)
-                            order.action = 'SELL'
-                            dps = str(current_ib.reqContractDetails(stock)[0].minTick + 1)[::-1].find('.') - 1
-                            order.lmtPrice = round(order.lmtPrice + current_ib.reqContractDetails(stock)[0].minTick * 2,dps)
-                            sell = current_ib.placeOrder(stock,order)
-                            current_ib.sleep(5)
-                            if sell.orderStatus.status=='Filled' or sell.orderStatus.status=='Submitted':
-                                cursor.execute("update trigger set status='Filled' where trigger_id=:id",{'id':trigger[0]})
-                                status = True
-                            else:
-                                status = False
-        cursor.close()
+            triggers = cursor.execute("select * from trigger where status='Active' and ticker=:ticker and trigger_type=:trigger_type order by price desc",
+            {'ticker':ticker[0],'trigger_type':'Below'})
+            trigger = triggers.fetchone()
+            if trigger:
+                if price<trigger[5]:
+                    divide = len(triggers.fetchall())
+                    if divide==0:
+                        divide = 1
+                    to_sell = math.floor(positions[ticker[0]]/divide)
+                    stock = ib.Stock(ticker[0],'SMART','USD')
+                    order = ib.Order()
+                    order.lmtPrice = price
+                    order.orderType = 'MKT'
+                    order.transmit = True
+                    order.totalQuantity = float(to_sell)
+                    order.action = 'SELL'
+                    dps = str(current_ib.reqContractDetails(stock)[0].minTick + 1)[::-1].find('.') - 1
+                    order.lmtPrice = round(order.lmtPrice + current_ib.reqContractDetails(stock)[0].minTick * 2,dps)
+                    sell = current_ib.placeOrder(stock,order)
+                    current_ib.sleep(5)
+                    if sell.orderStatus.status=='Filled' or sell.orderStatus.status=='Submitted':
+                        cursor.execute("update trigger set status='Filled' where trigger_id=:id",{'id':trigger[0]})
+                        if divide==1:
+                            cursor.execute("update trigger set status='Cancel' where ticker=:ticker and status='Active'",{'ticker':ticker[0]})
+                        status = True
+                    else:
+                        status = False
+            con.commit()
+            cursor.close()
 
     @Slot()
     def open_buy(self):
@@ -229,7 +235,6 @@ class TradeListWindow(QWidget):
         self.buywindow.pressed_update()
         self.buywindow.showMaximized()
         self.buywindow.activateWindow()
-
 
 class BuyWindow(QWidget):
     def __init__(self):

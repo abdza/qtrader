@@ -1,4 +1,6 @@
 pyside6
 yfinance
+yahooquery
 pandas
 numpy
+ib_insync
