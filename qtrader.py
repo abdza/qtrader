@@ -40,9 +40,9 @@ def connect_ib():
 
 def update_table():
     cursor = con.cursor()
-    cursor.execute("create table if not exists trades(trade_id INTEGER PRIMARY KEY,trade_date,ticker,setup,buy_price,sell_price,amount,stop_loss,r1,r2,total,status,pnl)")
-    cursor.execute("create table if not exists trigger(trigger_id INTEGER PRIMARY KEY,trade_date,ticker,status,trigger_type,price,pnl)")
-    cursor.execute("create table if not exists stocks(name,ticker,price,bear_score)")
+    cursor.execute("create table if not exists trades(trade_id INTEGER PRIMARY KEY,trade_date,ticker,setup,buy_price,sell_price,amount,stop_loss,r1,r2,total,status,pnl,close_date)")
+    cursor.execute("create table if not exists trigger(trigger_id INTEGER PRIMARY KEY,trade_date,ticker,status,trigger_type,price,pnl,close_date)")
+    cursor.execute("create table if not exists stocks(stocks_id INTEGER PRIMARY KEY,name,ticker,price,bear_score)")
     con.commit()
     cursor.close()
 
@@ -248,9 +248,15 @@ class TradeListWindow(QWidget):
                         sell = current_ib.placeOrder(stock,order)
                         current_ib.sleep(5)
                         if sell.orderStatus.status=='Filled' or sell.orderStatus.status=='Submitted':
-                            cursor.execute("update trigger set status='Filled' where trigger_id=:id",{'id':trigger[0]})
+                            cursor.execute("update trigger set status='Filled',close_date=:close_date where trigger_id=:id",{'id':trigger[0],'close_date':datetime.now().strftime("%Y-%m-%d %H:%M:%S")})
                             if divide==1:
-                                cursor.execute("update trigger set status='Cancel' where ticker=:ticker and status='Active'",{'ticker':ticker})
+                                cursor.execute("update trigger set status='Cancel',close_date=:close_date where ticker=:ticker and status='Active'",{'ticker':ticker,'close_date':datetime.now().strftime("%Y-%m-%d %H:%M:%S")})
+                                prev_trade = cursor.execute("select buy_price,amount from trades where status='New' and ticker=:ticker",{'ticker':ticker}).fetchone()
+                                cursor.execute("update trades set status='Complete',sell_price=:sell_price,pnl=:pnl,close_date=:close_date where ticker=:ticker and status='New'",
+                                               {'ticker':ticker,
+                                                'sell_price':price,
+                                                'close_date':datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                                                'pnl': prev_trade[0]*prev_trade[1] - price*prev_trade[1] })
                             status = True
                         else:
                             status = False
@@ -277,30 +283,43 @@ class TradeListWindow(QWidget):
                         sell = current_ib.placeOrder(stock,order)
                         current_ib.sleep(5)
                         if sell.orderStatus.status=='Filled' or sell.orderStatus.status=='Submitted':
-                            cursor.execute("update trigger set status='Filled' where trigger_id=:id",{'id':trigger[0]})
+                            cursor.execute("update trigger set status='Filled',close_date=:close_date where trigger_id=:id",{'id':trigger[0],'close_date':datetime.now().strftime("%Y-%m-%d %H:%M:%S")})
                             if divide==1:
-                                cursor.execute("update trigger set status='Cancel' where ticker=:ticker and status='Active'",{'ticker':ticker})
+                                cursor.execute("update trigger set status='Cancel',close_date=:close_date where ticker=:ticker and status='Active'",{'ticker':ticker,'close_date':datetime.now().strftime("%Y-%m-%d %H:%M:%S")})
+                                prev_trade = cursor.execute("select buy_price,amount from trades where status='New' and ticker=:ticker",{'ticker':ticker}).fetchone()
+                                cursor.execute("update trades set status='Complete',sell_price=:sell_price,pnl=:pnl,close_date=:close_date where ticker=:ticker and status='New'",
+                                               {'ticker':ticker,
+                                                'sell_price':price,
+                                                'close_date':datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                                                'pnl': prev_trade[0]*prev_trade[1] - price*prev_trade[1] })
                             status = True
                         else:
                             status = False
                 if selloff_time:
-                    to_sell = amount
-                    stock = ib.Stock(ticker,'SMART','USD')
-                    order = ib.Order()
-                    order.lmtPrice = price
-                    order.orderType = 'MKT'
-                    order.transmit = True
-                    order.totalQuantity = float(to_sell)
-                    order.action = 'SELL'
-                    dps = str(current_ib.reqContractDetails(stock)[0].minTick + 1)[::-1].find('.') - 1
-                    order.lmtPrice = round(order.lmtPrice + current_ib.reqContractDetails(stock)[0].minTick * 2,dps)
-                    sell = current_ib.placeOrder(stock,order)
-                    current_ib.sleep(5)
-                    if sell.orderStatus.status=='Filled' or sell.orderStatus.status=='Submitted':
-                        cursor.execute("update trigger set status='Cancel' where ticker=:ticker and status='Active'",{'ticker':ticker})
-                        status = True
-                    else:
-                        status = False
+                    if amount>0:
+                        to_sell = amount
+                        stock = ib.Stock(ticker,'SMART','USD')
+                        order = ib.Order()
+                        order.lmtPrice = price
+                        order.orderType = 'MKT'
+                        order.transmit = True
+                        order.totalQuantity = float(to_sell)
+                        order.action = 'SELL'
+                        dps = str(current_ib.reqContractDetails(stock)[0].minTick + 1)[::-1].find('.') - 1
+                        order.lmtPrice = round(order.lmtPrice + current_ib.reqContractDetails(stock)[0].minTick * 2,dps)
+                        sell = current_ib.placeOrder(stock,order)
+                        current_ib.sleep(5)
+                        if sell.orderStatus.status=='Filled' or sell.orderStatus.status=='Submitted':
+                            cursor.execute("update trigger set status='Cancel',close_date=:close_date where ticker=:ticker and status='Active'",{'ticker':ticker,'close_date':datetime.now().strftime("%Y-%m-%d %H:%M:%S")})
+                            prev_trade = cursor.execute("select buy_price,amount from trades where status='New' and ticker=:ticker",{'ticker':ticker}).fetchone()
+                            cursor.execute("update trades set status='Complete',sell_price=:sell_price,pnl=:pnl,close_date=:close_date where ticker=:ticker and status='New'",
+                                            {'ticker':ticker,
+                                            'sell_price':price,
+                                            'close_date':datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                                            'pnl': prev_trade[0]*prev_trade[1] - price*prev_trade[1] })
+                            status = True
+                        else:
+                            status = False
                 con.commit()
             cursor.close()
 
