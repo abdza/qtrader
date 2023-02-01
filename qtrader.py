@@ -17,6 +17,7 @@ from datetime import datetime, timedelta
 
 con = sqlite3.connect("qtrader.db")
 current_ib = ib.IB()
+newYorkTz = pytz.timezone("America/New_York")
 
 def latest_price(ticker):
     tickerQuery = yq.Ticker(ticker, asynchronous=False, Timeout=100)
@@ -40,7 +41,8 @@ def connect_ib():
 def update_table():
     cursor = con.cursor()
     cursor.execute("create table if not exists trades(trade_id INTEGER PRIMARY KEY,trade_date,ticker,setup,buy_price,sell_price,amount,stop_loss,r1,r2,total,status,pnl)")
-    cursor.execute("create table if not exists trigger(trigger_id INTEGER PRIMARY KEY,trade_date,ticker,status,trigger_type,price)")
+    cursor.execute("create table if not exists trigger(trigger_id INTEGER PRIMARY KEY,trade_date,ticker,status,trigger_type,price,pnl)")
+    cursor.execute("create table if not exists stocks(name,ticker,price,bear_score)")
     con.commit()
     cursor.close()
 
@@ -92,6 +94,26 @@ def is_far_from_levels(val,size_mean,levels):
 def candle_size(candle):
     return candle['High'] - candle['Low']
 
+def red_candle(candle):
+    return candle['Open'] > candle['Close']
+
+def green_candle(candle):
+    return candle['Open'] <= candle['Close']
+
+def clean_bear_movement(first,second):
+    cond1 = second['High']<first['High']
+    cond2 = second['Low']<first['Low']
+    cond3 = second['Open']<first['Open']
+    cond4 = second['Close']<first['Close']
+    return cond1 and cond2 and cond3 and cond4
+
+def clean_bull_movement(first,second):
+    cond1 = second['High']>first['High']
+    cond2 = second['Low']>first['Low']
+    cond3 = second['Open']>first['Open']
+    cond4 = second['Close']>first['Close']
+    return cond1 and cond2 and cond3 and cond4
+
 class TradeListTable(QTableWidget):
     headers = ['Date','Ticker','Setup','Price','Units','Loss Limit','R1','R2','P&L']
     def __init__(self):
@@ -131,14 +153,40 @@ class TradeListTable(QTableWidget):
         self.setHorizontalHeaderLabels(self.headers)
         cursor.close()
 
+class ScanWindow(QWidget):
+    def __init__(self):
+        cursor = con.cursor()
+        super().__init__()
+        stocks = pd.read_csv('zacks_list.csv',header=0)
+        end_date = datetime.now()
+        days = 10
+        start_date = end_date - timedelta(days=days)
+        for i in range(stocks.count()):
+            print(stocks.iloc[i]['Ticker'])
+            candles = yf.download(stocks.iloc[i]['Ticker'],start=start_date,end=end_date,interval='1d',prepost=False)
+            bear_score = 0
+            endpos = -1
+            while endpos > -3 and green_candle(candles.iloc[endpos]):
+                endpos -= 1
+            while red_candle(candles.iloc[endpos]):
+                if clean_bear_movement(candles.iloc[endpos - 1],candles.iloc[endpos]):
+                    bear_score += 1
+                endpos -= 1
+            if bear_score>0:
+                print("Found bear end for ",stocks.iloc[i]['Ticker']," score of ",bear_score)
+                query = "insert into stocks (name,ticker,price,bear_score) values (:name,:ticker,:price,:bear_score)"
+                con.execute(query,{'name':stocks.iloc[i]['Company Name'],'ticker':stocks.iloc[i]['Ticker'],'price':latest_price(stocks.iloc[i]['Ticker']),'bear_score':bear_score})
+                con.commit()
+        cursor.close()
+
 class TradeListWindow(QWidget):
     def __init__(self):
         super().__init__()
         connect_ib()
 
         self.list = TradeListTable()
-        self.layout = QVBoxLayout(self)
-        self.layout.addWidget(self.list)
+        layout = QVBoxLayout(self)
+        layout.addWidget(self.list)
 
         self.timer = QtCore.QTimer()
         self.timer.timeout.connect(self.checkprice)
@@ -148,64 +196,96 @@ class TradeListWindow(QWidget):
         self.ticker_text = QTextEdit("BBBY")
         self.ticker_text.setMaximumHeight(30)
         self.buy_button = QPushButton("Buy")
+        self.scan_button = QPushButton("Scan")
         actionrow.addWidget(self.ticker_text)
         actionrow.addWidget(self.buy_button)
+        actionrow.addWidget(self.scan_button)
         self.buy_button.clicked.connect(self.open_buy)
+        self.scan_button.clicked.connect(self.open_scan)
 
-        self.layout.addLayout(actionrow)
+        layout.addLayout(actionrow)
+        self.setLayout(layout)
     
     @Slot()
     def checkprice(self):
+        curtime = datetime.now(newYorkTz)
+        print("At New York:",curtime)
+        print("At New York Hour:",curtime.hour)
+        print("At New York Minute:",curtime.minute)
+        print("Minute test:",(curtime.hour==9 and curtime.minute>45)," Hour test:",curtime.hour>9)
+        open_counter = (curtime.hour>9 or (curtime.hour==9 and curtime.minute>45)) and curtime.hour<16
+        selloff_time = curtime.hour>=15 and curtime.minute>=40
+        print("Open counter:",open_counter," Sell off time:",selloff_time)
         print("Checking prices")
         if current_ib.isConnected():
             cursor = con.cursor()
-            tickers = cursor.execute("select distinct ticker from trigger where status='Active'")
             cur_pos = current_ib.positions()
-            positions = {}
             for cps in cur_pos:  # Loop over stock we own according to ib
                 ticker = cps[1].localSymbol
                 amount = cps[2]
-                positions[ticker] = amount
-            for ticker in tickers.fetchall():
-                if ticker[0] in positions and positions[ticker[0]]>0:
-                    price = latest_price(ticker[0])
-                    triggers = cursor.execute("select * from trigger where status='Active' and ticker=:ticker and trigger_type=:trigger_type order by price",
-                    {'ticker':ticker[0],'trigger_type':'Above'})
-                    trigger = triggers.fetchone()
-                    if trigger:
-                        if price>trigger[5]:
-                            divide = len(triggers.fetchall())
-                            if divide==0:
-                                divide = 1
-                            to_sell = math.floor(positions[ticker[0]]/divide)
-                            stock = ib.Stock(ticker[0],'SMART','USD')
-                            order = ib.Order()
-                            order.lmtPrice = price
-                            order.orderType = 'LMT'
-                            order.transmit = True
-                            order.totalQuantity = float(to_sell)
-                            order.action = 'SELL'
-                            dps = str(current_ib.reqContractDetails(stock)[0].minTick + 1)[::-1].find('.') - 1
-                            order.lmtPrice = round(order.lmtPrice + current_ib.reqContractDetails(stock)[0].minTick * 2,dps)
-                            sell = current_ib.placeOrder(stock,order)
-                            current_ib.sleep(5)
-                            if sell.orderStatus.status=='Filled' or sell.orderStatus.status=='Submitted':
-                                cursor.execute("update trigger set status='Filled' where trigger_id=:id",{'id':trigger[0]})
-                                if divide==1:
-                                    cursor.execute("update trigger set status='Cancel' where ticker=:ticker and status='Active'",{'ticker':ticker[0]})
-                                status = True
-                            else:
-                                status = False
-            triggers = cursor.execute("select * from trigger where status='Active' and ticker=:ticker and trigger_type=:trigger_type order by price desc",
-            {'ticker':ticker[0],'trigger_type':'Below'})
-            trigger = triggers.fetchone()
-            if trigger:
-                if price<trigger[5]:
-                    divide = len(triggers.fetchall())
-                    if divide==0:
-                        divide = 1
-                    to_sell = math.floor(positions[ticker[0]]/divide)
-                    stock = ib.Stock(ticker[0],'SMART','USD')
+                print("Checking price for ",ticker)
+                price = latest_price(ticker)
+                triggers = cursor.execute("select * from trigger where status='Active' and ticker=:ticker and trigger_type=:trigger_type order by price",
+                {'ticker':ticker,'trigger_type':'Above'})
+                trigger = triggers.fetchone()
+                if trigger:
+                    print("Comparing above price ",price," to trigger ",trigger[5])
+                    if price>trigger[5]:
+                        print("Price ",price," is higher than trigger ",trigger[5])
+                        divide = len(triggers.fetchall())
+                        if divide==0:
+                            divide = 1
+                        to_sell = math.floor(amount/divide)
+                        stock = ib.Stock(ticker,'SMART','USD')
+                        order = ib.Order()
+                        order.lmtPrice = price
+                        order.orderType = 'LMT'
+                        order.transmit = True
+                        order.totalQuantity = float(to_sell)
+                        order.action = 'SELL'
+                        dps = str(current_ib.reqContractDetails(stock)[0].minTick + 1)[::-1].find('.') - 1
+                        order.lmtPrice = round(order.lmtPrice + current_ib.reqContractDetails(stock)[0].minTick * 2,dps)
+                        sell = current_ib.placeOrder(stock,order)
+                        current_ib.sleep(5)
+                        if sell.orderStatus.status=='Filled' or sell.orderStatus.status=='Submitted':
+                            cursor.execute("update trigger set status='Filled' where trigger_id=:id",{'id':trigger[0]})
+                            if divide==1:
+                                cursor.execute("update trigger set status='Cancel' where ticker=:ticker and status='Active'",{'ticker':ticker})
+                            status = True
+                        else:
+                            status = False
+                triggers = cursor.execute("select * from trigger where status='Active' and ticker=:ticker and trigger_type=:trigger_type order by price desc",
+                {'ticker':ticker,'trigger_type':'Below'})
+                trigger = triggers.fetchone()
+                if trigger:
+                    print("Comparing below price ",price," to trigger ",trigger[5])
+                    if price<trigger[5]:
+                        print("Price ",price," is lower than trigger ",trigger[5])
+                        divide = len(triggers.fetchall())
+                        if divide==0:
+                            divide = 1
+                        to_sell = math.floor(amount/divide)
+                        stock = ib.Stock(ticker,'SMART','USD')
+                        order = ib.Order()
+                        order.lmtPrice = price
+                        order.orderType = 'MKT'
+                        order.transmit = True
+                        order.totalQuantity = float(to_sell)
+                        order.action = 'SELL'
+                        dps = str(current_ib.reqContractDetails(stock)[0].minTick + 1)[::-1].find('.') - 1
+                        order.lmtPrice = round(order.lmtPrice + current_ib.reqContractDetails(stock)[0].minTick * 2,dps)
+                        sell = current_ib.placeOrder(stock,order)
+                        current_ib.sleep(5)
+                        if sell.orderStatus.status=='Filled' or sell.orderStatus.status=='Submitted':
+                            cursor.execute("update trigger set status='Filled' where trigger_id=:id",{'id':trigger[0]})
+                            if divide==1:
+                                cursor.execute("update trigger set status='Cancel' where ticker=:ticker and status='Active'",{'ticker':ticker})
+                            status = True
+                        else:
+                            status = False
+                if selloff_time:
+                    to_sell = amount
+                    stock = ib.Stock(ticker,'SMART','USD')
                     order = ib.Order()
                     order.lmtPrice = price
                     order.orderType = 'MKT'
@@ -217,14 +297,20 @@ class TradeListWindow(QWidget):
                     sell = current_ib.placeOrder(stock,order)
                     current_ib.sleep(5)
                     if sell.orderStatus.status=='Filled' or sell.orderStatus.status=='Submitted':
-                        cursor.execute("update trigger set status='Filled' where trigger_id=:id",{'id':trigger[0]})
-                        if divide==1:
-                            cursor.execute("update trigger set status='Cancel' where ticker=:ticker and status='Active'",{'ticker':ticker[0]})
+                        cursor.execute("update trigger set status='Cancel' where ticker=:ticker and status='Active'",{'ticker':ticker})
                         status = True
                     else:
                         status = False
-            con.commit()
+                con.commit()
             cursor.close()
+
+    @Slot()
+    def open_scan(self):
+        self.scanwindow = ScanWindow()
+        self.scanwindow.caller = self
+        self.scanwindow.resize(800,600)
+        self.scanwindow.showMaximized()
+        self.scanwindow.activateWindow()
 
     @Slot()
     def open_buy(self):
@@ -307,7 +393,7 @@ class BuyWindow(QWidget):
         cursor = con.cursor()
         query = "insert into trades(trade_date,ticker,setup,buy_price,sell_price,amount,stop_loss,r1,r2,total,status,pnl) values (:trade_date,:ticker,:setup,:buy_price,:sell_price,:amount,:stop_loss,:r1,:r2,:total,:status,:pnl)"
         data = {"trade_date":datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        "ticker":self.ticker_text.text(),
+        "ticker":self.ticker_text.text().upper(),
         "setup":self.setup_text.toPlainText(),
         "buy_price":self.price_text.text(),
         "sell_price":None,
@@ -324,19 +410,19 @@ class BuyWindow(QWidget):
         con.commit()
         query = "insert into trigger(trade_date,ticker,status,trigger_type,price) values (:trade_date,:ticker,:status,:trigger_type,:price)"
         data = [{"trade_date":datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        "ticker":self.ticker_text.text(),
+        "ticker":self.ticker_text.text().upper(),
         "status":"Active",
         "trigger_type":"Above",
         "price":float(self.r1_text.text())},
         {"trade_date":datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        "ticker":self.ticker_text.text(),
+        "ticker":self.ticker_text.text().upper(),
         "status":"Active",
         "trigger_type":"Below",
         "price":float(self.stop_text.text())}]
         if len(self.r2_text.text()):
             data.append(
         {"trade_date":datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        "ticker":self.ticker_text.text(),
+        "ticker":self.ticker_text.text().upper(),
         "status":"Active",
         "trigger_type":"Above",
         "price":float(self.r2_text.text())}
@@ -422,7 +508,6 @@ class BuyWindow(QWidget):
         acmeSeries.setName(self.ticker_text.text())
         acmeSeries.setIncreasingColor(QColor(Qt.green))
         acmeSeries.setDecreasingColor(QColor(Qt.red))
-        newYorkTz = pytz.timezone("America/New_York")
         end_date = datetime.now()
         days = 120
         start_date = end_date - timedelta(days=days)
