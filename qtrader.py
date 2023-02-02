@@ -230,8 +230,9 @@ class TradeListWindow(QWidget):
                 trigger = triggers.fetchone()
                 if trigger:
                     print("Comparing above price ",price," to trigger ",trigger[5])
-                    if price>trigger[5]:
-                        print("Price ",price," is higher than trigger ",trigger[5])
+                    trigger_price = float(trigger[5])
+                    if price>trigger_price:
+                        print("Price ",price," is higher than trigger ",trigger_price)
                         divide = len(triggers.fetchall())
                         if divide==0:
                             divide = 1
@@ -265,8 +266,9 @@ class TradeListWindow(QWidget):
                 trigger = triggers.fetchone()
                 if trigger:
                     print("Comparing below price ",price," to trigger ",trigger[5])
-                    if price<trigger[5]:
-                        print("Price ",price," is lower than trigger ",trigger[5])
+                    trigger_price = float(trigger[5])
+                    if price<trigger_price:
+                        print("Price ",price," is lower than trigger ",trigger_price)
                         divide = len(triggers.fetchall())
                         if divide==0:
                             divide = 1
