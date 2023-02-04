@@ -42,7 +42,7 @@ def update_table():
     cursor = con.cursor()
     cursor.execute("create table if not exists trades(trade_id INTEGER PRIMARY KEY,trade_date,ticker,setup,buy_price,sell_price,amount,stop_loss,r1,r2,total,status,pnl,close_date)")
     cursor.execute("create table if not exists trigger(trigger_id INTEGER PRIMARY KEY,trade_date,ticker,status,trigger_type,price,pnl,close_date)")
-    cursor.execute("create table if not exists stocks(stocks_id INTEGER PRIMARY KEY,name,ticker,price,bear_score)")
+    cursor.execute("create table if not exists stocks(stocks_id INTEGER PRIMARY KEY,name,ticker,price,bear_score,vol_score,bounce_score)")
     con.commit()
     cursor.close()
 
@@ -153,31 +153,137 @@ class TradeListTable(QTableWidget):
         self.setHorizontalHeaderLabels(self.headers)
         cursor.close()
 
+class ScanListTable(QTableWidget):
+    headers = ['Ticker','Name','Price','Bear Score','Bounce Score','Vol Score']
+    def __init__(self):
+        super().__init__()
+        self.setColumnCount(len(self.headers))
+        self.setAlternatingRowColors(True)
+        self.update_list()
+        header = self.horizontalHeader()
+        header.setSectionResizeMode(0,QHeaderView.ResizeMode.Stretch)
+        header.setSectionResizeMode(1,QHeaderView.ResizeMode.Stretch)
+        header.setSectionResizeMode(2,QHeaderView.ResizeMode.Stretch)
+        header.setSectionResizeMode(3,QHeaderView.ResizeMode.Stretch)
+        header.setSectionResizeMode(4,QHeaderView.ResizeMode.Stretch)
+        header.setSectionResizeMode(5,QHeaderView.ResizeMode.Stretch)
+        self.setHorizontalHeaderLabels(self.headers)
+
+    def update_list(self):
+        cursor = con.cursor()
+        stocks = cursor.execute("select name,ticker,price,bear_score,vol_score,bounce_score from stocks where bounce_score > 0 order by bear_score desc, vol_score  desc, bounce_score desc")
+        self.clear()
+        self.setRowCount(0)
+        for stock in stocks:
+            print("Stock:",stock[2])
+            curpos = self.rowCount()
+            self.insertRow(curpos)
+            self.setItem(curpos,0,QTableWidgetItem(stock[1]))
+            self.setItem(curpos,1,QTableWidgetItem(stock[0]))
+            self.setItem(curpos,2,QTableWidgetItem(str(stock[2])))
+            self.setItem(curpos,3,QTableWidgetItem(str(stock[3])))
+            self.setItem(curpos,4,QTableWidgetItem(str(stock[5])))
+            self.setItem(curpos,5,QTableWidgetItem(str(stock[4])))
+        self.setHorizontalHeaderLabels(self.headers)
+        cursor.close()
+
+
 class ScanWindow(QWidget):
     def __init__(self):
-        cursor = con.cursor()
         super().__init__()
+        self.list = ScanListTable()
+        self.list.cellDoubleClicked.connect(self.goto_purchase)
+        layout = QVBoxLayout()
+        layout.addWidget(self.list)
+        self.update_db_button = QPushButton("Update")
+        layout.addWidget(self.update_db_button)
+        self.update_db_button.clicked.connect(self.refresh_db)
+        self.setLayout(layout)
+
+    @Slot()
+    def goto_purchase(self,row,column):
+        print("Row:",row," Column:",column)
+        self.buywindow = BuyWindow()
+        self.buywindow.caller = self
+        self.buywindow.resize(800,600)
+        self.buywindow.ticker_text.setText(self.list.item(row,0).text())
+        self.buywindow.pressed_update()
+        self.buywindow.showMaximized()
+        self.buywindow.activateWindow()
+
+    @Slot()
+    def refresh_db(self):
+        cursor = con.cursor()
         stocks = pd.read_csv('zacks_list.csv',header=0)
         end_date = datetime.now()
-        days = 10
+        days = 90
         start_date = end_date - timedelta(days=days)
-        for i in range(stocks.count()):
-            print(stocks.iloc[i]['Ticker'])
-            candles = yf.download(stocks.iloc[i]['Ticker'],start=start_date,end=end_date,interval='1d',prepost=False)
-            bear_score = 0
-            endpos = -1
-            while endpos > -3 and green_candle(candles.iloc[endpos]):
-                endpos -= 1
-            while red_candle(candles.iloc[endpos]):
-                if clean_bear_movement(candles.iloc[endpos - 1],candles.iloc[endpos]):
-                    bear_score += 1
-                endpos -= 1
-            if bear_score>0:
-                print("Found bear end for ",stocks.iloc[i]['Ticker']," score of ",bear_score)
-                query = "insert into stocks (name,ticker,price,bear_score) values (:name,:ticker,:price,:bear_score)"
-                con.execute(query,{'name':stocks.iloc[i]['Company Name'],'ticker':stocks.iloc[i]['Ticker'],'price':latest_price(stocks.iloc[i]['Ticker']),'bear_score':bear_score})
-                con.commit()
+        con.execute("delete from stocks")
+        con.commit()
+        for i in range(len(stocks.index)-1):
+            if isinstance(stocks.iloc[i]['Ticker'], str):
+                ticker = stocks.iloc[i]['Ticker'].upper()
+                print("Testing ",ticker)
+                candles = yf.download(ticker,start=start_date,end=end_date,interval='1d',prepost=False)
+            else:
+                continue
+
+            if not candles.empty and len(candles.index)>3:
+                print("Got size sample ",len(candles.index))
+                bear_score = 0
+                endpos = -1
+                print("Endpos is :",endpos)
+                while endpos > -3 and green_candle(candles.iloc[endpos]):
+                    endpos -= 1
+                print("Second Endpos is :",endpos," compare ",(len(candles.index)*-1)-2)
+                while endpos>(len(candles.index)*-1)+2 and red_candle(candles.iloc[endpos]):
+                    print("Imposed Endpos is :",endpos)
+                    if clean_bear_movement(candles.iloc[endpos - 1],candles.iloc[endpos]):
+                        bear_score += 1
+                    endpos -= 1
+                if bear_score>0:
+                    endvolume = 0
+                    endavg = 0
+                    for j in range(5):
+                        cj = (j + 1) * -1
+                        endvolume += candles.iloc[cj]['Volume']
+                    endavg = endvolume / 5
+                    totalavg = candles['Volume'].mean()
+                    vol_score = endavg / totalavg
+
+                    bounce_score = 0
+                    endpos = -1
+                    while endpos>(len(candles.index)*-1)+2 and green_candle(candles.iloc[endpos]):
+                        if clean_bull_movement(candles.iloc[endpos - 1],candles.iloc[endpos]):
+                            bounce_score += 1
+                        endpos -= 1
+
+                    if bounce_score>2:
+                        bounce_score -= (2 + bounce_score)
+
+                    endpos = -1
+                    while endpos>(len(candles.index)*-1)+2 and green_candle(candles.iloc[endpos]):
+                        inloop = endpos - 1
+                        print("Imposed inloop ",inloop)
+                        while inloop>(len(candles.index)*-1)+3 and candles.iloc[endpos]['Close'] > candles.iloc[inloop]['Close']:
+                            bounce_score += 1
+                            inloop -= 1
+                        endpos -= 1
+
+                    print("Found bear end for ",ticker," score of ",bear_score)
+                    query = "insert into stocks (name,ticker,price,bear_score,vol_score,bounce_score) values (:name,:ticker,:price,:bear_score,:vol_score,:bounce_score)"
+                    con.execute(query,{
+                        'name':stocks.iloc[i]['Company Name'],
+                        'ticker':ticker,
+                        'price':latest_price(ticker),
+                        'bear_score':bear_score,
+                        'vol_score':vol_score,
+                        'bounce_score':bounce_score
+                        })
+                    con.commit()
+        print("Done scanning")
         cursor.close()
+        self.list.update_list()
 
 class TradeListWindow(QWidget):
     def __init__(self):
@@ -208,16 +314,16 @@ class TradeListWindow(QWidget):
     
     @Slot()
     def checkprice(self):
-        curtime = datetime.now(newYorkTz)
-        print("At New York:",curtime)
-        print("At New York Hour:",curtime.hour)
-        print("At New York Minute:",curtime.minute)
-        print("Minute test:",(curtime.hour==9 and curtime.minute>45)," Hour test:",curtime.hour>9)
-        open_counter = (curtime.hour>9 or (curtime.hour==9 and curtime.minute>45)) and curtime.hour<16
-        selloff_time = curtime.hour>=15 and curtime.minute>=40
-        print("Open counter:",open_counter," Sell off time:",selloff_time)
-        print("Checking prices")
         if current_ib.isConnected():
+            curtime = datetime.now(newYorkTz)
+            print("At New York:",curtime)
+            print("At New York Hour:",curtime.hour)
+            print("At New York Minute:",curtime.minute)
+            print("Minute test:",(curtime.hour==9 and curtime.minute>45)," Hour test:",curtime.hour>9)
+            open_counter = (curtime.hour>9 or (curtime.hour==9 and curtime.minute>45)) and curtime.hour<16
+            selloff_time = curtime.hour>=15 and curtime.minute>=40
+            print("Open counter:",open_counter," Sell off time:",selloff_time)
+            print("Checking prices")
             cursor = con.cursor()
             cur_pos = current_ib.positions()
             for cps in cur_pos:  # Loop over stock we own according to ib
@@ -488,15 +594,27 @@ class BuyWindow(QWidget):
             self.pnl_stop_label.setText("0")
 
         if len(self.r1_text.text()):
-            pnl_r1 = (self.amount * float(self.r1_text.text())) - self.total_amount
+            amount = self.amount
+            if len(self.r2_text.text()):
+                amount = math.floor(amount/2)
+            total_r1 = (amount * float(self.r1_text.text())) # - self.total_amount
+            pnl_r1 = (amount * float(self.r1_text.text())) - self.total_amount
+            self.total_r1_label.setText(str(total_r1))
             self.pnl_r1_label.setText(str(pnl_r1))
         else:
+            self.total_r1_label.setText("0")
             self.pnl_r1_label.setText("0")
 
         if len(self.r2_text.text()):
-            pnl_r2 = (self.amount * float(self.r2_text.text())) - self.total_amount
+            amount = self.amount
+            if len(self.r1_text.text()):
+                amount = math.floor(amount/2)
+            total_r2 = (amount * float(self.r2_text.text())) # - self.total_amount
+            pnl_r2 = (amount * float(self.r1_text.text())) + (amount * float(self.r2_text.text())) - self.total_amount
+            self.total_r2_label.setText(str(total_r2))
             self.pnl_r2_label.setText(str(pnl_r2))
         else:
+            self.total_r2_label.setText("0")
             self.pnl_r2_label.setText("0")
 
     def create_info_box(self):
@@ -510,12 +628,16 @@ class BuyWindow(QWidget):
         self.pnl_stop_label = QLabel("float")
         self.pnl_r1_label = QLabel("float")
         self.pnl_r2_label = QLabel("float")
+        self.total_r1_label = QLabel("float")
+        self.total_r2_label = QLabel("float")
         layout.addRow(QLabel("Float: "), self.stockfloat_label)
         layout.addRow(QLabel("24h Volume: "), self.volume24h_label)
         layout.addRow(QLabel("Levels: "), self.levels_label)
         layout.addRow(QLabel("Size Mean: "), self.size_mean_label)
         layout.addRow(QLabel("Total Amount: "), self.total_amount_label)
         layout.addRow(QLabel("Stop Loss P&L: "), self.pnl_stop_label)
+        layout.addRow(QLabel("R1 Total: "), self.total_r1_label)
+        layout.addRow(QLabel("R2 Total: "), self.total_r2_label)
         layout.addRow(QLabel("R1 P&L: "), self.pnl_r1_label)
         layout.addRow(QLabel("R2 P&L: "), self.pnl_r2_label)
         self._info_box_group.setLayout(layout)
