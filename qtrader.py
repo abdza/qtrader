@@ -234,6 +234,7 @@ class ScanWindow(QWidget):
         start_date = end_date - timedelta(days=days)
         con.execute("delete from stocks")
         con.commit()
+        start_time = datetime.now()
         for i in range(len(stocks.index)-1):
             if isinstance(stocks.iloc[i]['Ticker'], str):
                 ticker = stocks.iloc[i]['Ticker'].upper()
@@ -355,6 +356,9 @@ class ScanWindow(QWidget):
                     con.commit()
         print("Done scanning")
         cursor.close()
+        end_time = datetime.now()
+        diff_time = end_time - start_time
+        print("Took ", diff_time)
         self.list.update_list()
 
 class TradeListWindow(QWidget):
@@ -732,9 +736,9 @@ class BuyWindow(QWidget):
         size_mean,levels = find_levels(candles)
         levels.sort()
         self.levels_label.setText(','.join([ str(x) for x in levels]))
-        self.size_mean_label.setText(str(size_mean))
         lastcandle = candles.iloc[-1]
         self.price = latest_price(self.ticker_text.text().upper())
+        self.size_mean_label.setText(str(size_mean) + " ----- " + str(size_mean+self.price))
         curend = -2
         endloop = len(candles) * -1
         while curend>endloop and candles.iloc[curend]['Low']>self.price:
