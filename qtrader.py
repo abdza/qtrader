@@ -42,7 +42,7 @@ def update_table():
     cursor = con.cursor()
     cursor.execute("create table if not exists trades(trade_id INTEGER PRIMARY KEY,trade_date,ticker,setup,buy_price,sell_price,amount,stop_loss,r1,r2,total,status,pnl,close_date)")
     cursor.execute("create table if not exists trigger(trigger_id INTEGER PRIMARY KEY,trade_date,ticker,status,trigger_type,price,pnl,close_date)")
-    cursor.execute("create table if not exists stocks(stocks_id INTEGER PRIMARY KEY,name,ticker,price,bear_score,vol_score,bounce_score)")
+    cursor.execute("create table if not exists stocks(stocks_id INTEGER PRIMARY KEY,name,ticker,price,bear_score,vol_score,bounce_score,bear_steps,bounce_steps,pullbackswallow)")
     con.commit()
     cursor.close()
 
@@ -95,23 +95,31 @@ def candle_size(candle):
     return candle['High'] - candle['Low']
 
 def red_candle(candle):
-    return candle['Open'] > candle['Close']
+    if candle['Open'] > candle['Close']:
+        return True
+    elif candle['Open'] < candle['Close']:
+        return False
+    else:
+        if candle['High'] - candle['Close'] > candle['Close'] - candle['Low']:
+            return True
+        else:
+            return False
 
 def green_candle(candle):
-    return candle['Open'] <= candle['Close']
+    return not red_candle(candle)
 
 def clean_bear_movement(first,second):
-    cond1 = second['High']<first['High']
-    cond2 = second['Low']<first['Low']
-    cond3 = second['Open']<first['Open']
-    cond4 = second['Close']<first['Close']
+    cond1 = second['High']<=first['High']
+    cond2 = second['Low']<=first['Low']
+    cond3 = second['Open']<=first['Open']
+    cond4 = second['Close']<=first['Close']
     return cond1 and cond2 and cond3 and cond4
 
 def clean_bull_movement(first,second):
-    cond1 = second['High']>first['High']
-    cond2 = second['Low']>first['Low']
-    cond3 = second['Open']>first['Open']
-    cond4 = second['Close']>first['Close']
+    cond1 = second['High']>=first['High']
+    cond2 = second['Low']>=first['Low']
+    cond3 = second['Open']>=first['Open']
+    cond4 = second['Close']>=first['Close']
     return cond1 and cond2 and cond3 and cond4
 
 class TradeListTable(QTableWidget):
@@ -154,7 +162,7 @@ class TradeListTable(QTableWidget):
         cursor.close()
 
 class ScanListTable(QTableWidget):
-    headers = ['Ticker','Name','Price','Bear Score','Bounce Score','Vol Score']
+    headers = ['Ticker','Name','Price','Bear Score','Bear Steps','Bounce Score','Bounce Steps','Vol Score','Swallow']
     def __init__(self):
         super().__init__()
         self.setColumnCount(len(self.headers))
@@ -167,11 +175,14 @@ class ScanListTable(QTableWidget):
         header.setSectionResizeMode(3,QHeaderView.ResizeMode.Stretch)
         header.setSectionResizeMode(4,QHeaderView.ResizeMode.Stretch)
         header.setSectionResizeMode(5,QHeaderView.ResizeMode.Stretch)
+        header.setSectionResizeMode(6,QHeaderView.ResizeMode.Stretch)
+        header.setSectionResizeMode(7,QHeaderView.ResizeMode.Stretch)
+        header.setSectionResizeMode(8,QHeaderView.ResizeMode.Stretch)
         self.setHorizontalHeaderLabels(self.headers)
 
     def update_list(self):
         cursor = con.cursor()
-        stocks = cursor.execute("select name,ticker,price,bear_score,vol_score,bounce_score from stocks where bounce_score > 0 order by bear_score desc, vol_score  desc, bounce_score desc")
+        stocks = cursor.execute("select name,ticker,price,bear_score,bear_steps,bounce_score,bounce_steps,vol_score,pullbackswallow from stocks where bear_steps > 0 and bounce_steps > 0 order by bear_steps desc, bear_score desc, vol_score  desc, bounce_steps desc, bounce_score desc")
         self.clear()
         self.setRowCount(0)
         for stock in stocks:
@@ -182,8 +193,11 @@ class ScanListTable(QTableWidget):
             self.setItem(curpos,1,QTableWidgetItem(stock[0]))
             self.setItem(curpos,2,QTableWidgetItem(str(stock[2])))
             self.setItem(curpos,3,QTableWidgetItem(str(stock[3])))
-            self.setItem(curpos,4,QTableWidgetItem(str(stock[5])))
-            self.setItem(curpos,5,QTableWidgetItem(str(stock[4])))
+            self.setItem(curpos,4,QTableWidgetItem(str(stock[4])))
+            self.setItem(curpos,5,QTableWidgetItem(str(stock[5])))
+            self.setItem(curpos,6,QTableWidgetItem(str(stock[6])))
+            self.setItem(curpos,7,QTableWidgetItem(str(stock[7])))
+            self.setItem(curpos,8,QTableWidgetItem(str(stock[8])))
         self.setHorizontalHeaderLabels(self.headers)
         cursor.close()
 
@@ -231,6 +245,12 @@ class ScanWindow(QWidget):
             if not candles.empty and len(candles.index)>3:
                 print("Got size sample ",len(candles.index))
                 bear_score = 0
+                vol_score = 0
+                bounce_score = 0
+                bear_steps = 0
+                bounce_steps = 0
+
+                """
                 endpos = -1
                 print("Endpos is :",endpos)
                 while endpos > -3 and green_candle(candles.iloc[endpos]):
@@ -269,16 +289,68 @@ class ScanWindow(QWidget):
                             bounce_score += 1
                             inloop -= 1
                         endpos -= 1
+                        """
 
-                    print("Found bear end for ",ticker," score of ",bear_score)
-                    query = "insert into stocks (name,ticker,price,bear_score,vol_score,bounce_score) values (:name,:ticker,:price,:bear_score,:vol_score,:bounce_score)"
+                endpos = -1
+                stages = 0      # 0 - pullback, 1 - bear
+                pullbackhigh = None
+                pullbacklow = None
+                pullbackswallow = None
+                bearhigh = None
+                bearlow = None
+                while endpos>(len(candles.index)*-1)+2 and stages<2:
+                    if stages == 0:
+                        if clean_bull_movement(candles.iloc[endpos - 1],candles.iloc[endpos]) and green_candle(candles.iloc[endpos]):
+                            bounce_steps += 1
+                            if not pullbackhigh:
+                                pullbackhigh = candles.iloc[endpos]['Close']
+                        else:
+                            if green_candle(candles.iloc[endpos]) and bounce_steps==0:
+                                bounce_steps += 1
+                                pullbackhigh = candles.iloc[endpos]['Close']
+                            stages = 1
+                            if pullbackhigh and not pullbacklow:
+                                pullbacklow = candles.iloc[endpos]['Open']
+                    elif stages == 1:
+                        if clean_bear_movement(candles.iloc[endpos -1],candles.iloc[endpos]) and red_candle(candles.iloc[endpos]):
+                            bear_steps += 1
+                            if not bearlow:
+                                bearlow = candles.iloc[endpos]['Close']
+                        else:
+                            stages = 2
+                            if bearlow and not bearhigh:
+                                bearhigh = candles.iloc[endpos]['Open']
+                    if pullbackhigh and pullbackhigh > candles.iloc[endpos]['Close']:
+                        if pullbackswallow:
+                            pullbackswallow += 1
+                        else:
+                            pullbackswallow = 1
+                    if bounce_steps>2 and stages<1:     # we don't want any extended bull run
+                        stages = 1
+                    endpos -= 1
+                
+                if bear_steps>0 and bearhigh and bearlow:
+                    bear_score = (bearhigh - bearlow) / bear_steps
+                if bounce_steps>0 and pullbackhigh and pullbacklow:
+                    bounce_score = (pullbackhigh - pullbacklow) / bounce_steps
+                    
+                if bear_steps > 0:
+                    end_vol = candles.iloc[-1:-5:-1]['Volume'].mean()
+                    all_vol = candles['Volume'].mean()
+                    vol_score = end_vol / all_vol
+
+                    print("Found bear end for ",ticker," score of ",bear_score," end vol:",end_vol," all vol:",all_vol," vol score:",vol_score)
+                    query = "insert into stocks (name,ticker,price,bear_score,bear_steps,vol_score,bounce_score,bounce_steps,pullbackswallow) values (:name,:ticker,:price,:bear_score,:bear_steps,:vol_score,:bounce_score,:bounce_steps,:pullbackswallow)"
                     con.execute(query,{
                         'name':stocks.iloc[i]['Company Name'],
                         'ticker':ticker,
                         'price':latest_price(ticker),
                         'bear_score':bear_score,
+                        'bear_steps':bear_steps,
                         'vol_score':vol_score,
-                        'bounce_score':bounce_score
+                        'bounce_score':bounce_score,
+                        'bounce_steps':bounce_steps,
+                        'pullbackswallow':pullbackswallow
                         })
                     con.commit()
         print("Done scanning")
@@ -647,10 +719,6 @@ class BuyWindow(QWidget):
         self.update_chart()
 
     def update_chart(self):
-        acmeSeries = QCandlestickSeries()
-        acmeSeries.setName(self.ticker_text.text())
-        acmeSeries.setIncreasingColor(QColor(Qt.green))
-        acmeSeries.setDecreasingColor(QColor(Qt.red))
         end_date = datetime.now()
         days = 120
         start_date = end_date - timedelta(days=days)
@@ -691,31 +759,58 @@ class BuyWindow(QWidget):
                     self.r2_text.setText(str(round(levels[j],4)))
         else:
             self.r1_text.setText(str(math.ceil(self.price)))
+        acmeSeries = QCandlestickSeries()
+        acmeSeries.setName(self.ticker_text.text())
+        acmeSeries.setIncreasingColor(QColor(Qt.green))
+        acmeSeries.setDecreasingColor(QColor(Qt.red))
 
+        volumeSeries = QBarSeries()
+        vset = QBarSet('Volume')
+
+        categories = []
         for idx in range(len(candles)):
             candle = candles.iloc[idx]
             candlestickSet = QCandlestickSet(candle['Open'],candle['High'],candle['Low'],candle['Close'],QDateTime(candle['timestamp']).toMSecsSinceEpoch())
             acmeSeries.append(candlestickSet)
+            categories.append(QDateTime(candle['timestamp']).toMSecsSinceEpoch())
+            vset.append(candle['Volume'])
+
+        volumeSeries.append(vset)
+
         self.chart.removeAllSeries()
         self.chart.addSeries(acmeSeries)
         self.chart.createDefaultAxes()
         self.chart.axisX().setLabelsAngle(-90)
         self.chart.axisY().setMax(ymax * 1.1)
         self.chart.axisY().setMin(ymin * 0.9)
+
+        self.volchart.removeAllSeries()
+        self.volchart.addSeries(volumeSeries)
+        self.volchart.createDefaultAxes()
     
     def create_chart(self):
         self.ticker_text.setText("BBBY")
         self._chart_group = QGroupBox("Chart")
         self.chart = QChart()
+        self.volchart = QChart()
         self.update_chart()
         self.chart.setTitle("Historical Data")
         self.chart.setAnimationOptions(QChart.SeriesAnimations)
         self.chart.legend().setVisible(True)
         self.chart.legend().setAlignment(Qt.AlignBottom)
+        self.volchart.setTitle("Volume Data")
+        self.volchart.setAnimationOptions(QChart.SeriesAnimations)
+        self.volchart.legend().setVisible(True)
+        self.volchart.legend().setAlignment(Qt.AlignBottom)
         layout = QVBoxLayout()
         self.chartview = QChartView(self.chart)
         self.chartview.setRenderHint(QPainter.Antialiasing)
-        layout.addWidget(self.chartview)
+        self.volchartview = QChartView(self.volchart)
+        self.volchartview.setRenderHint(QPainter.Antialiasing)
+        tab = QTabWidget()
+        tab.addTab(self.chartview,'Chart')
+        tab.addTab(self.volchartview,'Volume')
+        layout.addWidget(tab)
         self._chart_group.setLayout(layout)
 
 if __name__=="__main__":
