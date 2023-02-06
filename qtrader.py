@@ -1,5 +1,6 @@
 #!/bin/env python3
 import sys
+import csv
 import pytz
 import math
 import sqlite3
@@ -180,6 +181,15 @@ class ScanListTable(QTableWidget):
         header.setSectionResizeMode(8,QHeaderView.ResizeMode.Stretch)
         self.setHorizontalHeaderLabels(self.headers)
 
+    def export_csv(self):
+        cursor = con.cursor()
+        stocks = cursor.execute("select name,ticker,price,bear_score,bear_steps,bounce_score,bounce_steps,vol_score,pullbackswallow from stocks where bear_steps > 0 and bounce_steps > 0 order by bear_steps desc, bear_score desc, vol_score  desc, bounce_steps desc, bounce_score desc")
+        with open('shortlist_' + datetime.now().strftime("%Y_%m_%d_%H_%M_%S") + '.csv','w') as f:
+            writer = csv.writer(f)
+            writer.writerow(self.headers)
+            writer.writerows(stocks)
+        cursor.close()
+
     def update_list(self):
         cursor = con.cursor()
         stocks = cursor.execute("select name,ticker,price,bear_score,bear_steps,bounce_score,bounce_steps,vol_score,pullbackswallow from stocks where bear_steps > 0 and bounce_steps > 0 order by bear_steps desc, bear_score desc, vol_score  desc, bounce_steps desc, bounce_score desc")
@@ -210,8 +220,11 @@ class ScanWindow(QWidget):
         layout = QVBoxLayout()
         layout.addWidget(self.list)
         self.update_db_button = QPushButton("Update")
+        self.export_db_button = QPushButton("Export")
         layout.addWidget(self.update_db_button)
+        layout.addWidget(self.export_db_button)
         self.update_db_button.clicked.connect(self.refresh_db)
+        self.export_db_button.clicked.connect(self.export_db)
         self.setLayout(layout)
 
     @Slot()
@@ -224,6 +237,10 @@ class ScanWindow(QWidget):
         self.buywindow.pressed_update()
         self.buywindow.showMaximized()
         self.buywindow.activateWindow()
+
+    @Slot()
+    def export_db(self):
+        self.list.export_csv()
 
     @Slot()
     def refresh_db(self):
@@ -250,48 +267,6 @@ class ScanWindow(QWidget):
                 bounce_score = 0
                 bear_steps = 0
                 bounce_steps = 0
-
-                """
-                endpos = -1
-                print("Endpos is :",endpos)
-                while endpos > -3 and green_candle(candles.iloc[endpos]):
-                    endpos -= 1
-                print("Second Endpos is :",endpos," compare ",(len(candles.index)*-1)-2)
-                while endpos>(len(candles.index)*-1)+2 and red_candle(candles.iloc[endpos]):
-                    print("Imposed Endpos is :",endpos)
-                    if clean_bear_movement(candles.iloc[endpos - 1],candles.iloc[endpos]):
-                        bear_score += 1
-                    endpos -= 1
-                if bear_score>0:
-                    endvolume = 0
-                    endavg = 0
-                    for j in range(5):
-                        cj = (j + 1) * -1
-                        endvolume += candles.iloc[cj]['Volume']
-                    endavg = endvolume / 5
-                    totalavg = candles['Volume'].mean()
-                    vol_score = endavg / totalavg
-
-                    bounce_score = 0
-                    endpos = -1
-                    while endpos>(len(candles.index)*-1)+2 and green_candle(candles.iloc[endpos]):
-                        if clean_bull_movement(candles.iloc[endpos - 1],candles.iloc[endpos]):
-                            bounce_score += 1
-                        endpos -= 1
-
-                    if bounce_score>2:
-                        bounce_score -= (2 + bounce_score)
-
-                    endpos = -1
-                    while endpos>(len(candles.index)*-1)+2 and green_candle(candles.iloc[endpos]):
-                        inloop = endpos - 1
-                        print("Imposed inloop ",inloop)
-                        while inloop>(len(candles.index)*-1)+3 and candles.iloc[endpos]['Close'] > candles.iloc[inloop]['Close']:
-                            bounce_score += 1
-                            inloop -= 1
-                        endpos -= 1
-                        """
-
                 endpos = -1
                 stages = 0      # 0 - pullback, 1 - bear
                 pullbackhigh = None
