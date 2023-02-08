@@ -123,44 +123,6 @@ def clean_bull_movement(first,second):
     cond4 = second['Close']>=first['Close']
     return cond1 and cond2 and cond3 and cond4
 
-class TradeListTable(QTableWidget):
-    headers = ['Date','Ticker','Setup','Price','Units','Loss Limit','R1','R2','P&L']
-    def __init__(self):
-        super().__init__()
-        self.setColumnCount(len(self.headers))
-        self.setAlternatingRowColors(True)
-        self.update_list()
-        header = self.horizontalHeader()
-        header.setSectionResizeMode(0,QHeaderView.ResizeMode.Stretch)
-        header.setSectionResizeMode(1,QHeaderView.ResizeMode.Stretch)
-        header.setSectionResizeMode(2,QHeaderView.ResizeMode.Stretch)
-        header.setSectionResizeMode(3,QHeaderView.ResizeMode.Stretch)
-        header.setSectionResizeMode(4,QHeaderView.ResizeMode.Stretch)
-        header.setSectionResizeMode(5,QHeaderView.ResizeMode.Stretch)
-        header.setSectionResizeMode(6,QHeaderView.ResizeMode.Stretch)
-        header.setSectionResizeMode(7,QHeaderView.ResizeMode.Stretch)
-        header.setSectionResizeMode(8,QHeaderView.ResizeMode.Stretch)
-        self.setHorizontalHeaderLabels(self.headers)
-    
-    def update_list(self):
-        cursor = con.cursor()
-        trades = cursor.execute("select * from trades")
-        self.clear()
-        self.setRowCount(0)
-        for trade in trades:
-            curpos = self.rowCount()
-            self.insertRow(curpos)
-            self.setItem(curpos,0,QTableWidgetItem(trade[1]))
-            self.setItem(curpos,1,QTableWidgetItem(trade[2]))
-            self.setItem(curpos,2,QTableWidgetItem(trade[3]))
-            self.setItem(curpos,3,QTableWidgetItem(trade[4]))
-            self.setItem(curpos,4,QTableWidgetItem(trade[6]))
-            self.setItem(curpos,5,QTableWidgetItem(trade[7]))
-            self.setItem(curpos,6,QTableWidgetItem(trade[8]))
-            self.setItem(curpos,7,QTableWidgetItem(trade[9]))
-            self.setItem(curpos,8,QTableWidgetItem(trade[12]))
-        self.setHorizontalHeaderLabels(self.headers)
-        cursor.close()
 
 class ScanListTable(QTableWidget):
     headers = ['Ticker','Name','Price','Bear Score','Bear Steps','Bounce Score','Bounce Steps','Vol Score','Swallow']
@@ -186,8 +148,30 @@ class ScanListTable(QTableWidget):
         stocks = cursor.execute("select name,ticker,price,bear_score,bear_steps,bounce_score,bounce_steps,vol_score,pullbackswallow from stocks where bear_steps > 0 and bounce_steps > 0 order by bear_steps desc, bear_score desc, vol_score  desc, bounce_steps desc, bounce_score desc")
         with open('shortlist_' + datetime.now().strftime("%Y_%m_%d_%H_%M_%S") + '.csv','w') as f:
             writer = csv.writer(f)
-            writer.writerow(self.headers)
-            writer.writerows(stocks)
+            writer.writerow(self.headers + ['Latest Close','Colour','Gap','Candle Size','Gap Size'])
+            for stock in stocks.fetchall():
+                end_date = datetime.now()
+                days = 5
+                start_date = end_date - timedelta(days=days)
+                try:
+                    candles = yf.download(stock[1],start=start_date,end=end_date,interval='1d',prepost=False)
+                    latest = candles.iloc[-1]
+                    secondlatest = candles.iloc[-2]
+                    color = 'Green'
+                    if red_candle(latest):
+                        color = 'Red'
+                    gap = 'Up'
+                    if latest['Open']<secondlatest['Close']:
+                        gap = 'Down'
+                    gapsize = latest['Open'] - secondlatest['Close']
+                    writer.writerow(stock + tuple([latest['Close'],color,gap,candle_size(latest),gapsize]))
+                except Exception as exp:
+                    print("Processing ",stock[1]," got error:",exp)
+        dlg = QMessageBox(self)
+        dlg.setWindowTitle("Export complete")
+        dlg.setText("Done export")
+        dlg.exec()
+        print("Done export")
         cursor.close()
 
     def update_list(self):
@@ -260,7 +244,7 @@ class ScanWindow(QWidget):
             else:
                 continue
 
-            if not candles.empty and len(candles.index)>3:
+            if not candles.empty and len(candles.index)>3 and latest_price(ticker)>0.1:
                 print("Got size sample ",len(candles.index))
                 bear_score = 0
                 vol_score = 0
@@ -335,6 +319,168 @@ class ScanWindow(QWidget):
         diff_time = end_time - start_time
         print("Took ", diff_time)
         self.list.update_list()
+        dlg = QMessageBox(self)
+        dlg.setWindowTitle("Scan complete")
+        dlg.setText("Scan complete in " + str(diff_time) + " time")
+        dlg.exec()
+
+class TriggerListTable(QTableWidget):
+    headers = ['Date','Ticker','Status','Type','Price','P&L','Close Date','Action']
+    combo_selection = ['Active','Filled','Cancel']
+    type_selection = ['Above','Below']
+    ticker = None
+
+    def __init__(self):
+        super().__init__()
+        self.setColumnCount(len(self.headers))
+        self.setAlternatingRowColors(True)
+        self.update_list()
+        header = self.horizontalHeader()
+        header.setSectionResizeMode(0,QHeaderView.ResizeMode.Stretch)
+        header.setSectionResizeMode(1,QHeaderView.ResizeMode.Stretch)
+        header.setSectionResizeMode(2,QHeaderView.ResizeMode.Stretch)
+        header.setSectionResizeMode(3,QHeaderView.ResizeMode.Stretch)
+        header.setSectionResizeMode(4,QHeaderView.ResizeMode.Stretch)
+        header.setSectionResizeMode(5,QHeaderView.ResizeMode.Stretch)
+        header.setSectionResizeMode(6,QHeaderView.ResizeMode.Stretch)
+        header.setSectionResizeMode(7,QHeaderView.ResizeMode.Stretch)
+        self.setHorizontalHeaderLabels(self.headers)
+    
+    def update_list(self):
+        cursor = con.cursor()
+        if self.ticker:
+            print("Filter by:",self.ticker)
+            trades = cursor.execute("select * from trigger where ticker=:ticker order by trade_date desc",{'ticker':self.ticker})
+        else:
+            trades = cursor.execute("select * from trigger order by trade_date desc")
+        self.clear()
+        self.setRowCount(0)
+        i = 0
+        self.row_id = []
+        self.type_combo = []
+        self.status_combo = []
+        self.price_widget = []
+        self.update_trigger_button = []
+        for trade in trades:
+            curpos = self.rowCount()
+            self.row_id.append(trade[0])
+            self.insertRow(curpos)
+            self.setItem(curpos,0,QTableWidgetItem(trade[1]))
+            self.setItem(curpos,1,QTableWidgetItem(trade[2]))
+            cur_status_combo = QComboBox()
+            cur_status_combo.addItems(self.combo_selection)
+            cur_status_combo.setCurrentText(trade[3])
+            self.status_combo.append(cur_status_combo)
+            self.setCellWidget(curpos,2,self.status_combo[i])
+            cur_type_combo = QComboBox()
+            cur_type_combo.addItems(self.type_selection)
+            cur_type_combo.setCurrentText(trade[4])
+            self.type_combo.append(cur_type_combo)
+            self.setCellWidget(curpos,3,self.type_combo[i])
+            self.price_widget.append(QTableWidgetItem(str(trade[5])))
+            self.setItem(curpos,4,self.price_widget[i])
+            self.setItem(curpos,5,QTableWidgetItem(str(trade[6])))
+            self.setItem(curpos,6,QTableWidgetItem(trade[7]))
+
+            trigger_button = QPushButton("Update")
+            trigger_button.clicked.connect(self.update_row)
+            self.update_trigger_button.append(trigger_button)
+
+            self.setCellWidget(curpos,7,self.update_trigger_button[i])
+            i += 1
+        self.setHorizontalHeaderLabels(self.headers)
+        cursor.close()
+
+    @Slot(int)
+    def update_row(self):
+        print("Will update row",self.row_id[self.currentRow()])
+        cursor = con.cursor()
+        data = {
+            'price':float(self.price_widget[self.currentRow()].text()),
+            'status':str(self.status_combo[self.currentRow()].currentText()),
+            'type':str(self.type_combo[self.currentRow()].currentText()),
+            'id':self.row_id[self.currentRow()]
+        }
+        print("Data to update:",data)
+        cursor.execute("update trigger set price=:price,status=:status,trigger_type=:type where trigger_id=:id",data)
+        con.commit()
+        cursor.close()
+
+class TriggerListWindow(QWidget):
+    def __init__(self):
+        super().__init__()
+        self.list = TriggerListTable()
+        layout = QVBoxLayout(self)
+        layout.addWidget(self.list)
+        self.setLayout(layout)
+
+    def create_trade_info_box(self):
+        self._trade_info_group = QGroupBox("Buy")
+        layout = QFormLayout()
+        layout.addRow(QLabel("Trade Limit: "), self.trade_limit_label )
+        layout.addRow(QLabel("Ticker: "), self.ticker_label )
+        layout.addRow(QLabel("Setup: "), self.setup_label )
+        layout.addRow(QLabel("Price: "), self.price_label )
+        layout.addRow(QLabel("Stop Loss: "), self.stop_label )
+        layout.addRow(QLabel("R1: "), self.r1_label ) 
+        layout.addRow(QLabel("R2: "), self.r2_label )
+        layout.addRow(QLabel("Amount: "), self.amount_label )
+        self._trade_info_group.setLayout(layout)
+
+    def update_list(self,ticker=None):
+        if ticker:
+            self.list.ticker = ticker
+        self.list.update_list()
+
+class TradeListTable(QTableWidget):
+    headers = ['Date','Ticker','Setup','Price','Units','Loss Limit','R1','R2','P&L']
+    def __init__(self):
+        super().__init__()
+        self.setColumnCount(len(self.headers))
+        self.setAlternatingRowColors(True)
+        self.update_list()
+        self.cellDoubleClicked.connect(self.open_trigger)
+        header = self.horizontalHeader()
+        header.setSectionResizeMode(0,QHeaderView.ResizeMode.Stretch)
+        header.setSectionResizeMode(1,QHeaderView.ResizeMode.Stretch)
+        header.setSectionResizeMode(2,QHeaderView.ResizeMode.Stretch)
+        header.setSectionResizeMode(3,QHeaderView.ResizeMode.Stretch)
+        header.setSectionResizeMode(4,QHeaderView.ResizeMode.Stretch)
+        header.setSectionResizeMode(5,QHeaderView.ResizeMode.Stretch)
+        header.setSectionResizeMode(6,QHeaderView.ResizeMode.Stretch)
+        header.setSectionResizeMode(7,QHeaderView.ResizeMode.Stretch)
+        header.setSectionResizeMode(8,QHeaderView.ResizeMode.Stretch)
+        self.setHorizontalHeaderLabels(self.headers)
+    
+    def update_list(self):
+        cursor = con.cursor()
+        trades = cursor.execute("select * from trades")
+        self.clear()
+        self.setRowCount(0)
+        for trade in trades:
+            curpos = self.rowCount()
+            self.insertRow(curpos)
+            self.setItem(curpos,0,QTableWidgetItem(trade[1]))
+            self.setItem(curpos,1,QTableWidgetItem(trade[2]))
+            self.setItem(curpos,2,QTableWidgetItem(trade[3]))
+            self.setItem(curpos,3,QTableWidgetItem(trade[4]))
+            self.setItem(curpos,4,QTableWidgetItem(trade[6]))
+            self.setItem(curpos,5,QTableWidgetItem(trade[7]))
+            self.setItem(curpos,6,QTableWidgetItem(trade[8]))
+            self.setItem(curpos,7,QTableWidgetItem(trade[9]))
+            self.setItem(curpos,8,QTableWidgetItem(trade[12]))
+        self.setHorizontalHeaderLabels(self.headers)
+        cursor.close()
+
+    @Slot()
+    def open_trigger(self):
+        self.triggerwindow = TriggerListWindow()
+        item = self.item(self.currentRow(),1)
+        curticker = item.text()
+        self.triggerwindow.update_list(curticker)
+        self.triggerwindow.resize(800,600)
+        self.triggerwindow.showMaximized()
+        self.triggerwindow.activateWindow()
 
 class TradeListWindow(QWidget):
     def __init__(self):
@@ -354,11 +500,14 @@ class TradeListWindow(QWidget):
         self.ticker_text.setMaximumHeight(30)
         self.buy_button = QPushButton("Buy")
         self.scan_button = QPushButton("Scan")
+        self.trigger_button = QPushButton("Trigger")
         actionrow.addWidget(self.ticker_text)
         actionrow.addWidget(self.buy_button)
         actionrow.addWidget(self.scan_button)
+        actionrow.addWidget(self.trigger_button)
         self.buy_button.clicked.connect(self.open_buy)
         self.scan_button.clicked.connect(self.open_scan)
+        self.trigger_button.clicked.connect(self.open_trigger)
 
         layout.addLayout(actionrow)
         self.setLayout(layout)
@@ -406,15 +555,25 @@ class TradeListWindow(QWidget):
                         sell = current_ib.placeOrder(stock,order)
                         current_ib.sleep(5)
                         if sell.orderStatus.status=='Filled' or sell.orderStatus.status=='Submitted':
-                            cursor.execute("update trigger set status='Filled',close_date=:close_date where trigger_id=:id",{'id':trigger[0],'close_date':datetime.now().strftime("%Y-%m-%d %H:%M:%S")})
+                            cursor.execute("update trigger set status='Filled',close_date=:close_date where trigger_id=:id",
+                                {
+                                    'id':trigger[0],
+                                    'close_date':datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                                })
                             if divide==1:
-                                cursor.execute("update trigger set status='Cancel',close_date=:close_date where ticker=:ticker and status='Active'",{'ticker':ticker,'close_date':datetime.now().strftime("%Y-%m-%d %H:%M:%S")})
+                                cursor.execute("update trigger set status='Cancel',close_date=:close_date where ticker=:ticker and status='Active'",
+                                    {
+                                        'ticker':ticker,
+                                        'close_date':datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                                    })
                                 prev_trade = cursor.execute("select buy_price,amount from trades where status='New' and ticker=:ticker",{'ticker':ticker}).fetchone()
                                 cursor.execute("update trades set status='Complete',sell_price=:sell_price,pnl=:pnl,close_date=:close_date where ticker=:ticker and status='New'",
-                                               {'ticker':ticker,
-                                                'sell_price':price,
-                                                'close_date':datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                                                'pnl': prev_trade[0]*prev_trade[1] - price*prev_trade[1] })
+                                    {
+                                        'ticker':ticker,
+                                        'sell_price':price,
+                                        'close_date':datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                                        'pnl': prev_trade[0]*prev_trade[1] - price*prev_trade[1]
+                                    })
                             status = True
                         else:
                             status = False
@@ -442,15 +601,25 @@ class TradeListWindow(QWidget):
                         sell = current_ib.placeOrder(stock,order)
                         current_ib.sleep(5)
                         if sell.orderStatus.status=='Filled' or sell.orderStatus.status=='Submitted':
-                            cursor.execute("update trigger set status='Filled',close_date=:close_date where trigger_id=:id",{'id':trigger[0],'close_date':datetime.now().strftime("%Y-%m-%d %H:%M:%S")})
+                            cursor.execute("update trigger set status='Filled',close_date=:close_date where trigger_id=:id",
+                                {
+                                    'id':trigger[0],
+                                    'close_date':datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                                })
                             if divide==1:
-                                cursor.execute("update trigger set status='Cancel',close_date=:close_date where ticker=:ticker and status='Active'",{'ticker':ticker,'close_date':datetime.now().strftime("%Y-%m-%d %H:%M:%S")})
+                                cursor.execute("update trigger set status='Cancel',close_date=:close_date where ticker=:ticker and status='Active'",
+                                    {
+                                        'ticker':ticker,
+                                        'close_date':datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                                    })
                                 prev_trade = cursor.execute("select buy_price,amount from trades where status='New' and ticker=:ticker",{'ticker':ticker}).fetchone()
                                 cursor.execute("update trades set status='Complete',sell_price=:sell_price,pnl=:pnl,close_date=:close_date where ticker=:ticker and status='New'",
-                                               {'ticker':ticker,
-                                                'sell_price':price,
-                                                'close_date':datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                                                'pnl': prev_trade[0]*prev_trade[1] - price*prev_trade[1] })
+                                    {
+                                        'ticker':ticker,
+                                        'sell_price':price,
+                                        'close_date':datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                                        'pnl': prev_trade[0]*prev_trade[1] - price*prev_trade[1] 
+                                    })
                             status = True
                         else:
                             status = False
@@ -469,13 +638,22 @@ class TradeListWindow(QWidget):
                         sell = current_ib.placeOrder(stock,order)
                         current_ib.sleep(5)
                         if sell.orderStatus.status=='Filled' or sell.orderStatus.status=='Submitted':
-                            cursor.execute("update trigger set status='Cancel',close_date=:close_date where ticker=:ticker and status='Active'",{'ticker':ticker,'close_date':datetime.now().strftime("%Y-%m-%d %H:%M:%S")})
-                            prev_trade = cursor.execute("select buy_price,amount from trades where status='New' and ticker=:ticker",{'ticker':ticker}).fetchone()
+                            cursor.execute("update trigger set status='Cancel',close_date=:close_date where ticker=:ticker and status='Active'",
+                                {
+                                    'ticker':ticker,
+                                    'close_date':datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                                })
+                            prev_trade = cursor.execute("select buy_price,amount from trades where status='New' and ticker=:ticker",
+                                {
+                                    'ticker':ticker
+                                }).fetchone()
                             cursor.execute("update trades set status='Complete',sell_price=:sell_price,pnl=:pnl,close_date=:close_date where ticker=:ticker and status='New'",
-                                            {'ticker':ticker,
-                                            'sell_price':price,
-                                            'close_date':datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                                            'pnl': prev_trade[0]*prev_trade[1] - price*prev_trade[1] })
+                                {
+                                    'ticker':ticker,
+                                    'sell_price':price,
+                                    'close_date':datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                                    'pnl': prev_trade[0]*prev_trade[1] - price*prev_trade[1] 
+                                })
                             status = True
                         else:
                             status = False
@@ -485,6 +663,14 @@ class TradeListWindow(QWidget):
     @Slot()
     def open_scan(self):
         self.scanwindow = ScanWindow()
+        self.scanwindow.caller = self
+        self.scanwindow.resize(800,600)
+        self.scanwindow.showMaximized()
+        self.scanwindow.activateWindow()
+
+    @Slot()
+    def open_trigger(self):
+        self.scanwindow = TriggerListWindow()
         self.scanwindow.caller = self
         self.scanwindow.resize(800,600)
         self.scanwindow.showMaximized()
@@ -517,7 +703,7 @@ class BuyWindow(QWidget):
     def create_buy_form(self):
         self._buy_form_group = QGroupBox("Buy")
         layout = QFormLayout()
-        self.trade_limit_text = QLineEdit("200")
+        self.trade_limit_text = QLineEdit("150")
         self.trade_limit_text.textChanged.connect(self.update_limit)
         self.ticker_text = QLineEdit()
         self.ticker_text.setText("BBBY")
@@ -570,41 +756,49 @@ class BuyWindow(QWidget):
                 status = False
         cursor = con.cursor()
         query = "insert into trades(trade_date,ticker,setup,buy_price,sell_price,amount,stop_loss,r1,r2,total,status,pnl) values (:trade_date,:ticker,:setup,:buy_price,:sell_price,:amount,:stop_loss,:r1,:r2,:total,:status,:pnl)"
-        data = {"trade_date":datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        "ticker":self.ticker_text.text().upper(),
-        "setup":self.setup_text.toPlainText(),
-        "buy_price":self.price_text.text(),
-        "sell_price":None,
-        "amount":self.amount_text.text(),
-        "stop_loss":self.stop_text.text(),
-        "r1":self.r1_text.text(),
-        "r2":self.r2_text.text(),
-        "total":self.total_amount_label.text(),
-        "status":"New",
-        "pnl":None}
+        data = {
+            "trade_date":datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "ticker":self.ticker_text.text().upper(),
+            "setup":self.setup_text.toPlainText(),
+            "buy_price":self.price_text.text(),
+            "sell_price":None,
+            "amount":self.amount_text.text(),
+            "stop_loss":self.stop_text.text(),
+            "r1":self.r1_text.text(),
+            "r2":self.r2_text.text(),
+            "total":self.total_amount_label.text(),
+            "status":"New",
+            "pnl":None
+        }
         print("Query:",query)
         print("Data:",data)
         cursor.execute(query,data)
         con.commit()
         query = "insert into trigger(trade_date,ticker,status,trigger_type,price) values (:trade_date,:ticker,:status,:trigger_type,:price)"
-        data = [{"trade_date":datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        "ticker":self.ticker_text.text().upper(),
-        "status":"Active",
-        "trigger_type":"Above",
-        "price":float(self.r1_text.text())},
-        {"trade_date":datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        "ticker":self.ticker_text.text().upper(),
-        "status":"Active",
-        "trigger_type":"Below",
-        "price":float(self.stop_text.text())}]
+        data = [
+            {
+                "trade_date":datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                "ticker":self.ticker_text.text().upper(),
+                "status":"Active",
+                "trigger_type":"Above",
+                "price":float(self.r1_text.text())
+            },
+            {
+                "trade_date":datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                "ticker":self.ticker_text.text().upper(),
+                "status":"Active",
+                "trigger_type":"Below",
+                "price":float(self.stop_text.text())
+            }
+        ]
         if len(self.r2_text.text()):
-            data.append(
-        {"trade_date":datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        "ticker":self.ticker_text.text().upper(),
-        "status":"Active",
-        "trigger_type":"Above",
-        "price":float(self.r2_text.text())}
-            )
+            data.append({
+                "trade_date":datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                "ticker":self.ticker_text.text().upper(),
+                "status":"Active",
+                "trigger_type":"Above",
+                "price":float(self.r2_text.text())
+            })
         print("Query:",query)
         print("Data:",data)
         cursor.executemany(query,data)
