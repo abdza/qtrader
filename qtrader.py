@@ -580,7 +580,7 @@ class TradeListWindow(QWidget):
                         order.action = 'SELL'
                         order.orderType = 'TRAIL'
                         order.totalQuantity = float(to_sell)
-                        order.trailingPercent = 1
+                        order.trailingPercent = 0.5
                         order.transmit = True
                         sell = current_ib.placeOrder(stock,order)
                         current_ib.sleep(5)
@@ -604,7 +604,7 @@ class TradeListWindow(QWidget):
                                         'ticker':ticker,
                                         'sell_price':price,
                                         'close_date':datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                                        'pnl': prev_trade[0]*prev_trade[1] - price*prev_trade[1]
+                                        'pnl': float(prev_trade[0])*float(prev_trade[1]) - price*float(prev_trade[1])
                                     })
                             status = True
                         elif sell.orderStatus.status=='PreSubmitted':
@@ -626,7 +626,7 @@ class TradeListWindow(QWidget):
                                         'ticker':ticker,
                                         'sell_price':price,
                                         'close_date':datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                                        'pnl': prev_trade[0]*prev_trade[1] - price*prev_trade[1]
+                                        'pnl': float(prev_trade[0])*float(prev_trade[1]) - price*float(prev_trade[1])
                                     })
                             status = True
                         else:
@@ -672,7 +672,7 @@ class TradeListWindow(QWidget):
                                         'ticker':ticker,
                                         'sell_price':price,
                                         'close_date':datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                                        'pnl': prev_trade[0]*prev_trade[1] - price*prev_trade[1] 
+                                        'pnl': float(prev_trade[0])*float(prev_trade[1]) - price*float(prev_trade[1])
                                     })
                             status = True
                         else:
