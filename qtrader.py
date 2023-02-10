@@ -166,7 +166,6 @@ class ScanListTable(QTableWidget):
                 days = 5
                 start_date = end_date - timedelta(days=days)
                 try:
-                    # candles = yf.download(stock[1],start=start_date,end=end_date,interval='1d',prepost=False)
                     ticker = yq.Ticker(stock[1])
                     candles = ticker.history(start=start_date,end=end_date)
                     latest = candles.iloc[-1]
@@ -258,7 +257,6 @@ class ScanWindow(QWidget):
             if isinstance(stocks.iloc[i]['Ticker'], str):
                 ticker = stocks.iloc[i]['Ticker'].upper()
                 print("Testing ",ticker)
-                # candles = yf.download(ticker,start=start_date,end=end_date,interval='1d',prepost=False)
                 dticker = yq.Ticker(ticker)
                 candles = dticker.history(start=start_date,end=end_date)
             else:
@@ -357,7 +355,7 @@ class ScanWindow(QWidget):
 
 class TriggerListTable(QTableWidget):
     headers = ['Date','Ticker','Status','Type','Price','P&L','close Date','Action']
-    combo_selection = ['Active','Filled','Cancel']
+    combo_selection = ['Active','Filled','Cancel','Submitted']
     type_selection = ['Above','Below']
     ticker = None
 
@@ -532,13 +530,16 @@ class TradeListWindow(QWidget):
         self.buy_button = QPushButton("Buy")
         self.scan_button = QPushButton("Scan")
         self.trigger_button = QPushButton("Trigger")
+        self.refresh_button = QPushButton("Refresh")
         actionrow.addWidget(self.ticker_text)
         actionrow.addWidget(self.buy_button)
         actionrow.addWidget(self.scan_button)
         actionrow.addWidget(self.trigger_button)
+        actionrow.addWidget(self.refresh_button)
         self.buy_button.clicked.connect(self.open_buy)
         self.scan_button.clicked.connect(self.open_scan)
         self.trigger_button.clicked.connect(self.open_trigger)
+        self.refresh_button.clicked.connect(self.refresh_list)
 
         layout.addLayout(actionrow)
         self.setLayout(layout)
@@ -576,15 +577,14 @@ class TradeListWindow(QWidget):
                         to_sell = math.floor(amount/divide)
                         stock = ib.Stock(ticker,'SMART','USD')
                         order = ib.Order()
-                        order.lmtPrice = price
-                        order.orderType = 'LMT'
-                        order.transmit = True
-                        order.totalQuantity = float(to_sell)
                         order.action = 'SELL'
-                        dps = str(current_ib.reqContractDetails(stock)[0].minTick + 1)[::-1].find('.') - 1
-                        order.lmtPrice = round(order.lmtPrice + current_ib.reqContractDetails(stock)[0].minTick * 2,dps)
+                        order.orderType = 'TRAIL'
+                        order.totalQuantity = float(to_sell)
+                        order.trailingPercent = 1
+                        order.transmit = True
                         sell = current_ib.placeOrder(stock,order)
                         current_ib.sleep(5)
+                        print("Trail status:",sell.orderStatus.status)
                         if sell.orderStatus.status=='Filled' or sell.orderStatus.status=='Submitted':
                             cursor.execute("update trigger set status='Filled',close_date=:close_date where trigger_id=:id",
                                 {
@@ -598,6 +598,29 @@ class TradeListWindow(QWidget):
                                         'close_date':datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                                     })
                                 prev_trade = cursor.execute("select buy_price,amount from trades where status='New' and ticker=:ticker",{'ticker':ticker}).fetchone()
+                                print('prev trade:',prev_trade)
+                                cursor.execute("update trades set status='Complete',sell_price=:sell_price,pnl=:pnl,close_date=:close_date where ticker=:ticker and status='New'",
+                                    {
+                                        'ticker':ticker,
+                                        'sell_price':price,
+                                        'close_date':datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                                        'pnl': prev_trade[0]*prev_trade[1] - price*prev_trade[1]
+                                    })
+                            status = True
+                        elif sell.orderStatus.status=='PreSubmitted':
+                            cursor.execute("update trigger set status='Submitted',close_date=:close_date where trigger_id=:id",
+                                {
+                                    'id':trigger[0],
+                                    'close_date':datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                                })
+                            if divide==1:
+                                cursor.execute("update trigger set status='Cancel',close_date=:close_date where ticker=:ticker and status='Active'",
+                                    {
+                                        'ticker':ticker,
+                                        'close_date':datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                                    })
+                                prev_trade = cursor.execute("select buy_price,amount from trades where status='New' and ticker=:ticker",{'ticker':ticker}).fetchone()
+                                print('prev trade:',prev_trade)
                                 cursor.execute("update trades set status='Complete',sell_price=:sell_price,pnl=:pnl,close_date=:close_date where ticker=:ticker and status='New'",
                                     {
                                         'ticker':ticker,
@@ -692,6 +715,10 @@ class TradeListWindow(QWidget):
             cursor.close()
 
     @Slot()
+    def refresh_list(self):
+        self.list.update_list()
+
+    @Slot()
     def open_scan(self):
         self.scanwindow = ScanWindow()
         self.scanwindow.caller = self
@@ -756,6 +783,7 @@ class BuyWindow(QWidget):
         tickerbox = QHBoxLayout()
         tickerbox.addWidget(self.ticker_text)
         tickerbox.addWidget(self.update_button)
+        self.place_order = QCheckBox("Place Order")
         layout.addRow(QLabel("Trade Limit: "), self.trade_limit_text )
         layout.addRow(QLabel("Ticker: "), tickerbox )
         layout.addRow(QLabel("Setup: "), self.setup_text )
@@ -764,27 +792,64 @@ class BuyWindow(QWidget):
         layout.addRow(QLabel("R1: "), self.r1_text ) 
         layout.addRow(QLabel("R2: "), self.r2_text )
         layout.addRow(QLabel("Amount: "), self.amount_text )
-        layout.addRow(self.buy_button)
+        layout.addRow(self.place_order,self.buy_button)
         self._buy_form_group.setLayout(layout)
 
     @Slot()
     def buy_action(self):
         if current_ib.isConnected():
+            print("Connected to IB")
+            nextId = current_ib.client.getReqId()
+            print("Next ID:",nextId)
             stock = ib.Stock(self.ticker_text.text(),'SMART','USD')
             order = ib.Order()
-            order.lmtPrice = float(self.price_text.text())
-            order.orderType = 'LMT'
-            order.transmit = True
-            order.totalQuantity = float(self.amount_text.text())
+            order.orderId = nextId
             order.action = 'BUY'
+            order.orderType = 'LMT'
+            order.totalQuantity = float(self.amount_text.text())
+            order.lmtPrice = float(self.price_text.text())
+            if self.place_order.isChecked():
+                order.transmit = False
+            else:
+                order.transmit = True
+
             dps = str(current_ib.reqContractDetails(stock)[0].minTick + 1)[::-1].find('.') - 1
             order.lmtPrice = round(order.lmtPrice + current_ib.reqContractDetails(stock)[0].minTick * 2,dps)
             bought = current_ib.placeOrder(stock,order)
+
+            if self.place_order.isChecked():
+                takeProfit = ib.Order()
+                takeProfit.orderId = order.orderId + 1
+                takeProfit.action = 'SELL'
+                takeProfit.orderType = 'LMT'
+                takeProfit.totalQuantity = float(self.amount_text.text())
+                takeProfit.lmtPrice = float(self.r1_text.text())
+                takeProfit.parentId = nextId
+                takeProfit.transmit = False
+                bought2 = current_ib.placeOrder(stock,takeProfit)
+
+                stopLoss = ib.Order()
+                stopLoss.orderId = order.orderId + 2
+                stopLoss.action = 'SELL'
+                stopLoss.orderType = 'STP'
+                #Stop trigger price
+                stopLoss.auxPrice = float(self.stop_text.text())
+                stopLoss.totalQuantity = float(self.amount_text.text())
+                stopLoss.parentId = nextId
+                #In this case, the low side order will be the last child being sent. Therefore, it needs to set this attribute to True
+                #to activate all its predecessors
+                stopLoss.transmit = True
+                bought3 = current_ib.placeOrder(stock,stopLoss)
+
             current_ib.sleep(5)
             if bought.orderStatus.status=='Filled' or bought.orderStatus.status=='Submitted':
+                print("Placed order for",self.ticker_text.text())
                 status = True
             else:
+                print("Not able to place order")
                 status = False
+        else:
+            print("Not connected to IB")
         cursor = con.cursor()
         query = "insert into trades(trade_date,ticker,setup,buy_price,sell_price,amount,stop_loss,r1,r2,total,status,pnl) values (:trade_date,:ticker,:setup,:buy_price,:sell_price,:amount,:stop_loss,:r1,:r2,:total,:status,:pnl)"
         data = {
@@ -805,19 +870,23 @@ class BuyWindow(QWidget):
         print("Data:",data)
         cursor.execute(query,data)
         con.commit()
+        savestatus = 'Active'
+        if self.place_order.isChecked():
+            savestatus = 'Submitted'
+
         query = "insert into trigger(trade_date,ticker,status,trigger_type,price) values (:trade_date,:ticker,:status,:trigger_type,:price)"
         data = [
             {
                 "trade_date":datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                 "ticker":self.ticker_text.text().upper(),
-                "status":"Active",
+                "status":savestatus,
                 "trigger_type":"Above",
                 "price":float(self.r1_text.text())
             },
             {
                 "trade_date":datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                 "ticker":self.ticker_text.text().upper(),
-                "status":"Active",
+                "status":savestatus,
                 "trigger_type":"Below",
                 "price":float(self.stop_text.text())
             }
@@ -873,7 +942,7 @@ class BuyWindow(QWidget):
             amount = self.amount
             if len(self.r2_text.text()):
                 amount = math.floor(amount/2)
-            total_r1 = (amount * float(self.r1_text.text())) # - self.total_amount
+            total_r1 = (amount * float(self.r1_text.text())) 
             pnl_r1 = (amount * float(self.r1_text.text())) - self.total_amount
             self.total_r1_label.setText(str(total_r1))
             self.pnl_r1_label.setText(str(pnl_r1))
@@ -885,7 +954,7 @@ class BuyWindow(QWidget):
             amount = self.amount
             if len(self.r1_text.text()):
                 amount = math.floor(amount/2)
-            total_r2 = (amount * float(self.r2_text.text())) # - self.total_amount
+            total_r2 = (amount * float(self.r2_text.text())) 
             pnl_r2 = (amount * float(self.r1_text.text())) + (amount * float(self.r2_text.text())) - self.total_amount
             self.total_r2_label.setText(str(total_r2))
             self.pnl_r2_label.setText(str(pnl_r2))
@@ -941,7 +1010,6 @@ class BuyWindow(QWidget):
             self.volume24h_label.setText(str(ticker.summary_detail[tickertxt]['volume']))
             self.yearhigh_label.setText(str(ticker.summary_detail[tickertxt]['fiftyTwoWeekHigh']))
             self.yearlow_label.setText(str(ticker.summary_detail[tickertxt]['fiftyTwoWeekLow']))
-            # candles = yf.download(tickertxt,start=start_date,end=end_date,interval='1d',prepost=False)
             candles = ticker.history(start=start_date,end=end_date)
             candles['timestamp'] = [ pd.Timestamp(dt[1]) for dt in candles.index.values ]
             ymin = candles['low'].min()
