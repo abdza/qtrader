@@ -826,6 +826,7 @@ class BuyWindow(QWidget):
                 takeProfit.lmtPrice = float(self.r1_text.text())
                 takeProfit.parentId = nextId
                 takeProfit.transmit = False
+                takeProfit.tif = 'GTC'
                 bought2 = current_ib.placeOrder(stock,takeProfit)
 
                 stopLoss = ib.Order()
@@ -839,6 +840,7 @@ class BuyWindow(QWidget):
                 #In this case, the low side order will be the last child being sent. Therefore, it needs to set this attribute to True
                 #to activate all its predecessors
                 stopLoss.transmit = True
+                stopLoss.tif = 'GTC'
                 bought3 = current_ib.placeOrder(stock,stopLoss)
 
             current_ib.sleep(5)
