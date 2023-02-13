@@ -544,18 +544,38 @@ class TradeListWindow(QWidget):
         self.scan_button = QPushButton("Scan")
         self.trigger_button = QPushButton("Trigger")
         self.refresh_button = QPushButton("Refresh")
+        self.export_button = QPushButton("Export")
         actionrow.addWidget(self.ticker_text)
         actionrow.addWidget(self.buy_button)
         actionrow.addWidget(self.scan_button)
         actionrow.addWidget(self.trigger_button)
         actionrow.addWidget(self.refresh_button)
+        actionrow.addWidget(self.export_button)
         self.buy_button.clicked.connect(self.open_buy)
         self.scan_button.clicked.connect(self.open_scan)
         self.trigger_button.clicked.connect(self.open_trigger)
         self.refresh_button.clicked.connect(self.refresh_list)
+        self.export_button.clicked.connect(self.export_trades)
 
         layout.addLayout(actionrow)
         self.setLayout(layout)
+
+    @Slot()
+    def export_trades(self):
+        headers = ['Date','Ticker','Setup','Buy Price','Sell Price','Amount','Stop Loss','R1','R2','Total','Status','P&L','Close Date']
+        cursor = con.cursor()
+        trades = cursor.execute("select trade_date,ticker,setup,buy_price,sell_price,amount,stop_loss,r1,r2,total,status,pnl,close_date from trades order by trade_date desc,ticker asc")
+        with open('trades_' + datetime.now().strftime("%Y_%m_%d_%H_%M_%S") + '.csv','w') as f:
+            writer = csv.writer(f)
+            writer.writerow(headers)
+            for trade in trades.fetchall():
+                    writer.writerow(trade)
+        dlg = QMessageBox(self)
+        dlg.setWindowTitle("Export complete")
+        dlg.setText("Done export")
+        dlg.exec()
+        print("Done export")
+        cursor.close()
 
     @Slot()
     def checkprice(self):
