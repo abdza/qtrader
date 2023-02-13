@@ -23,7 +23,11 @@ newYorkTz = pytz.timezone("America/New_York")
 def latest_price(ticker):
     tickerQuery = yq.Ticker(ticker, asynchronous=False, Timeout=100)
     if "regularMarketPrice" in tickerQuery.price[ticker]:
-        return tickerQuery.price[ticker]["regularMarketPrice"]
+        try:
+            return tickerQuery.price[ticker]["regularMarketPrice"]
+        except Exception as exp:
+            print("Can't get price for:",tickerQuery.price[ticker])
+            return 0
     else:
         return 0
 
@@ -43,7 +47,7 @@ def update_table():
     cursor = con.cursor()
     cursor.execute("create table if not exists trades(trade_id INTEGER PRIMARY KEY,trade_date,ticker,setup,buy_price,sell_price,amount,stop_loss,r1,r2,total,status,pnl,close_date)")
     cursor.execute("create table if not exists trigger(trigger_id INTEGER PRIMARY KEY,trade_date,ticker,status,trigger_type,price,pnl,close_date)")
-    cursor.execute("create table if not exists stocks(stocks_id INTEGER PRIMARY KEY,name,ticker,price,bear_score,vol_score,bounce_score,bear_steps,bounce_steps,pullbackswallow,opt_size,volume)")
+    cursor.execute("create table if not exists stocks(stocks_id INTEGER PRIMARY KEY,name,ticker,price,bear_score,vol_score,bounce_score,bear_steps,bounce_steps,pullbackswallow,opt_size,volume,tradecount)")
     con.commit()
     cursor.close()
 
@@ -135,7 +139,7 @@ def clean_bull_movement(first,second):
 
 
 class ScanListTable(QTableWidget):
-    headers = ['Ticker','Name','Price','Opt Size','Volume','Bear Score','Bear Steps','Bounce Score','Bounce Steps','Vol Score','Swallow']
+    headers = ['Ticker','Name','Price','Opt Size','Volume','Bear Steps','Bounce Steps','Swallow','Trade Count']
     def __init__(self):
         super().__init__()
         self.setColumnCount(len(self.headers))
@@ -151,22 +155,20 @@ class ScanListTable(QTableWidget):
         header.setSectionResizeMode(6,QHeaderView.ResizeMode.Stretch)
         header.setSectionResizeMode(7,QHeaderView.ResizeMode.Stretch)
         header.setSectionResizeMode(8,QHeaderView.ResizeMode.Stretch)
-        header.setSectionResizeMode(9,QHeaderView.ResizeMode.Stretch)
-        header.setSectionResizeMode(10,QHeaderView.ResizeMode.Stretch)
         self.setHorizontalHeaderLabels(self.headers)
 
     def export_csv(self):
         cursor = con.cursor()
-        stocks = cursor.execute("select ticker,name,price,opt_size,volume,bear_score,bear_steps,bounce_score,bounce_steps,vol_score,pullbackswallow from stocks where bear_steps > 0 and bounce_steps > 0 order by opt_size desc,volume desc,bear_steps desc, bear_score desc, vol_score  desc, bounce_steps desc, bounce_score desc")
+        stocks = cursor.execute("select ticker,name,price,opt_size,volume,bear_steps,bounce_steps,pullbackswallow,tradecount,bear_score,bounce_score,vol_score from stocks where bear_steps > 0 and bounce_steps > 0 order by tradecount desc, volume desc, opt_size desc, bear_steps desc, bear_score desc, vol_score desc, bounce_steps desc, bounce_score desc")
         with open('shortlist_' + datetime.now().strftime("%Y_%m_%d_%H_%M_%S") + '.csv','w') as f:
             writer = csv.writer(f)
-            writer.writerow(self.headers + ['Latest close','Colour','Gap','Candle Size','Gap Size'])
+            writer.writerow(self.headers + ['Bear Score','Bounce Score','Volume Score','Latest close','Colour','Gap','Candle Size','Gap Size'])
             for stock in stocks.fetchall():
                 end_date = datetime.now()
                 days = 5
                 start_date = end_date - timedelta(days=days)
                 try:
-                    ticker = yq.Ticker(stock[1])
+                    ticker = yq.Ticker(stock[0])
                     candles = ticker.history(start=start_date,end=end_date)
                     latest = candles.iloc[-1]
                     secondlatest = candles.iloc[-2]
@@ -189,26 +191,24 @@ class ScanListTable(QTableWidget):
 
     def update_list(self):
         cursor = con.cursor()
-        stocks = cursor.execute("select name,ticker,price,bear_score,bear_steps,bounce_score,bounce_steps,vol_score,pullbackswallow,opt_size,volume from stocks where bear_steps > 0 and bounce_steps > 0 order by opt_size desc, bear_steps desc, bear_score desc, vol_score  desc, bounce_steps desc, bounce_score desc")
+        stocks = cursor.execute("select ticker,name,price,opt_size,volume,bear_steps,bounce_steps,pullbackswallow,tradecount,bear_score,bounce_score,vol_score from stocks where bear_steps > 0 and bounce_steps > 0 order by tradecount desc, volume desc, opt_size desc, bear_steps desc, bear_score desc, vol_score desc, bounce_steps desc, bounce_score desc")
         self.clear()
         self.setRowCount(0)
         for stock in stocks:
             curpos = self.rowCount()
             self.insertRow(curpos)
-            tickertxt = stock[1]
+            tickertxt = stock[0]
             if tickertxt:
                 tickertxt = tickertxt.strip()
             self.setItem(curpos,0,QTableWidgetItem(tickertxt))
-            self.setItem(curpos,1,QTableWidgetItem(stock[0]))
+            self.setItem(curpos,1,QTableWidgetItem(stock[1]))
             self.setItem(curpos,2,QTableWidgetItem(str(stock[2])))
-            self.setItem(curpos,3,QTableWidgetItem(str(stock[9])))
-            self.setItem(curpos,4,QTableWidgetItem(str(stock[10])))
-            self.setItem(curpos,5,QTableWidgetItem(str(stock[3])))
-            self.setItem(curpos,6,QTableWidgetItem(str(stock[4])))
-            self.setItem(curpos,7,QTableWidgetItem(str(stock[5])))
-            self.setItem(curpos,8,QTableWidgetItem(str(stock[6])))
-            self.setItem(curpos,9,QTableWidgetItem(str(stock[7])))
-            self.setItem(curpos,10,QTableWidgetItem(str(stock[8])))
+            self.setItem(curpos,3,QTableWidgetItem(str(stock[3])))
+            self.setItem(curpos,4,QTableWidgetItem(str(stock[4])))
+            self.setItem(curpos,5,QTableWidgetItem(str(stock[5])))
+            self.setItem(curpos,6,QTableWidgetItem(str(stock[6])))
+            self.setItem(curpos,7,QTableWidgetItem(str(stock[7])))
+            self.setItem(curpos,8,QTableWidgetItem(str(stock[8])))
         self.setHorizontalHeaderLabels(self.headers)
         cursor.close()
 
@@ -262,6 +262,9 @@ class ScanWindow(QWidget):
             else:
                 continue
 
+            print("Empty candles:",candles.empty)
+            print("Candles length:",len(candles.index))
+            print("Latest price:",latest_price(ticker))
             if not candles.empty and len(candles.index)>3 and latest_price(ticker)>0.1:
                 print("Got size sample ",len(candles.index))
                 bear_score = 0
@@ -325,9 +328,18 @@ class ScanWindow(QWidget):
                         while l<len(levels)-1 and curprice>levels[l]:
                             l+=1
                         opt_size = levels[l] - curprice
+                    minute_start_date = end_date - timedelta(days=3)
+                    minute_candles = dticker.history(start=minute_start_date,end=end_date,interval='5m')
+                    print("Minute shape:",minute_candles.shape[0])
 
                     print("Found bear end for ",ticker," score of ",bear_score," end vol:",end_vol," all vol:",all_vol," vol score:",vol_score)
-                    query = "insert into stocks (name,ticker,price,bear_score,bear_steps,vol_score,bounce_score,bounce_steps,pullbackswallow,opt_size,volume) values (:name,:ticker,:price,:bear_score,:bear_steps,:vol_score,:bounce_score,:bounce_steps,:pullbackswallow,:opt_size,:volume)"
+                    query = "insert into stocks (name,ticker,price,bear_score,bear_steps,vol_score,bounce_score,bounce_steps,pullbackswallow,opt_size,volume,tradecount) values (:name,:ticker,:price,:bear_score,:bear_steps,:vol_score,:bounce_score,:bounce_steps,:pullbackswallow,:opt_size,:volume,:tradecount)"
+                    try:
+                        candlevolume = dticker.summary_detail[ticker]['volume']
+                    except Exception as exp:
+                        candlevolume = 0
+                        print("Error getting volume:",exp)
+                    print("Cur volume:",candlevolume)
                     con.execute(query,{
                         'name':stocks.iloc[i]['Company Name'],
                         'ticker':ticker,
@@ -339,7 +351,8 @@ class ScanWindow(QWidget):
                         'bounce_steps':bounce_steps,
                         'pullbackswallow':pullbackswallow,
                         'opt_size':opt_size,
-                        'volume':dticker.summary_detail[ticker]['volume'],
+                        'volume':candlevolume,
+                        'tradecount':minute_candles.shape[0]
                         })
                     con.commit()
         print("Done scanning")
@@ -580,7 +593,7 @@ class TradeListWindow(QWidget):
                         order.action = 'SELL'
                         order.orderType = 'TRAIL'
                         order.totalQuantity = float(to_sell)
-                        order.trailingPercent = 0.5
+                        order.trailingPercent = 0.1
                         order.transmit = True
                         sell = current_ib.placeOrder(stock,order)
                         current_ib.sleep(5)
@@ -927,39 +940,50 @@ class BuyWindow(QWidget):
 
     @Slot()
     def update_total_amount(self):
+        self.amount = 0
         if len(self.amount_text.text()):
-            self.amount = float(self.amount_text.text())
-        else:
-            self.amount = 0
+            try:
+                self.amount = float(self.amount_text.text())
+            except Exception as exp:
+                print("Error converting amount:",exp)
         self.total_amount = self.price * self.amount
         self.total_amount_label.setText(str(self.total_amount))
 
         if len(self.stop_text.text()):
-            pnl_stop = (self.amount * float(self.stop_text.text())) - self.total_amount
-            self.pnl_stop_label.setText(str(pnl_stop))
+            try:
+                pnl_stop = (self.amount * float(self.stop_text.text())) - self.total_amount
+                self.pnl_stop_label.setText(str(pnl_stop))
+            except Exception as exp:
+                print("Error converting P&L:",exp)
         else:
             self.pnl_stop_label.setText("0")
 
         if len(self.r1_text.text()):
-            amount = self.amount
-            if len(self.r2_text.text()):
-                amount = math.floor(amount/2)
-            total_r1 = (amount * float(self.r1_text.text())) 
-            pnl_r1 = (amount * float(self.r1_text.text())) - self.total_amount
-            self.total_r1_label.setText(str(total_r1))
-            self.pnl_r1_label.setText(str(pnl_r1))
+            try:
+                amount = self.amount
+                if len(self.r2_text.text()):
+                    amount = math.floor(amount/2)
+                total_r1 = (amount * float(self.r1_text.text())) 
+                pnl_r1 = (amount * float(self.r1_text.text())) - self.total_amount
+                self.total_r1_label.setText(str(total_r1))
+                self.pnl_r1_label.setText(str(pnl_r1))
+            except Exception as exp:
+                print("Error converting R1:",exp)
         else:
             self.total_r1_label.setText("0")
             self.pnl_r1_label.setText("0")
 
         if len(self.r2_text.text()):
-            amount = self.amount
-            if len(self.r1_text.text()):
-                amount = math.floor(amount/2)
-            total_r2 = (amount * float(self.r2_text.text())) 
-            pnl_r2 = (amount * float(self.r1_text.text())) + (amount * float(self.r2_text.text())) - self.total_amount
-            self.total_r2_label.setText(str(total_r2))
-            self.pnl_r2_label.setText(str(pnl_r2))
+            try:
+                amount = self.amount
+                if len(self.r1_text.text()):
+                    amount = math.floor(amount/2)
+                total_r2 = (amount * float(self.r2_text.text())) 
+                pnl_r2 = (amount * float(self.r1_text.text())) + (amount * float(self.r2_text.text())) - self.total_amount
+                self.total_r2_label.setText(str(total_r2))
+                self.pnl_r2_label.setText(str(pnl_r2))
+            except Exception as exp:
+                print("Error converting R2:",exp)
         else:
             self.total_r2_label.setText("0")
             self.pnl_r2_label.setText("0")
@@ -1008,6 +1032,9 @@ class BuyWindow(QWidget):
         try:
             ticker = yq.Ticker(tickertxt)
             print("Ticker:",ticker.summary_detail)
+            print("Ticker price:",ticker.price)
+            print("Ticker events:",ticker.calendar_events)
+            print("Ticker news:",ticker.news())
             self.marketcap_label.setText(str(ticker.summary_detail[tickertxt]['marketCap']))
             self.volume24h_label.setText(str(ticker.summary_detail[tickertxt]['volume']))
             self.yearhigh_label.setText(str(ticker.summary_detail[tickertxt]['fiftyTwoWeekHigh']))
