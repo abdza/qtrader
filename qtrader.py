@@ -739,7 +739,7 @@ class TradeListWindow(QWidget):
                                     'ticker':ticker,
                                     'sell_price':price,
                                     'close_date':datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                                    'pnl': prev_trade[0]*prev_trade[1] - price*prev_trade[1] 
+                                    'pnl': float(prev_trade[0])*float(prev_trade[1]) - price*float(prev_trade[1])
                                 })
                             status = True
                         else:
