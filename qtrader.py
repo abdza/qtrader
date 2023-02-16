@@ -4,6 +4,7 @@ import csv
 import pytz
 import math
 import sqlite3
+import requests
 import ib_insync as ib
 from PySide6 import QtCore, QtGui
 from PySide6.QtCore import Slot,QPointF,QDateTime
@@ -14,6 +15,7 @@ import yfinance as yf
 import yahooquery as yq
 import pandas as pd
 import numpy as np
+import settings
 from datetime import datetime, timedelta
 
 con = sqlite3.connect("qtrader.db")
@@ -1055,6 +1057,12 @@ class BuyWindow(QWidget):
             print("Ticker price:",ticker.price)
             print("Ticker events:",ticker.calendar_events)
             print("Ticker news:",ticker.news())
+            url = 'https://www.alphavantage.co/query?function=NEWS_SENTIMENT&tickers=' + tickertxt + '&apikey=' + settings.alphavantage_key + '&limit=5'
+            r = requests.get(url)
+            news_data = r.json()
+            print("News: ",news_data)
+            print("News url: ",url)
+            self.news_tab.setPlainText('\r'.join([ n['time_published'] + '  -  ' + n['title'] for n in news_data['feed'] ]))
             self.marketcap_label.setText(str(ticker.summary_detail[tickertxt]['marketCap']))
             self.volume24h_label.setText(str(ticker.summary_detail[tickertxt]['volume']))
             self.yearhigh_label.setText(str(ticker.summary_detail[tickertxt]['fiftyTwoWeekHigh']))
@@ -1145,9 +1153,11 @@ class BuyWindow(QWidget):
         self.chartview.setRenderHint(QPainter.Antialiasing)
         self.volchartview = QChartView(self.volchart)
         self.volchartview.setRenderHint(QPainter.Antialiasing)
+        self.news_tab = QPlainTextEdit()
         tab = QTabWidget()
         tab.addTab(self.chartview,'Chart')
-        tab.addTab(self.volchartview,'volume')
+        tab.addTab(self.volchartview,'Volume')
+        tab.addTab(self.news_tab,'News')
         layout.addWidget(tab)
         self._chart_group.setLayout(layout)
 
