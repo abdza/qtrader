@@ -7,7 +7,7 @@ import sqlite3
 import requests
 import ib_insync as ib
 from PySide6 import QtCore, QtGui
-from PySide6.QtCore import Slot,QPointF,QDateTime
+from PySide6.QtCore import Slot,QPointF,QDateTime,QUrl
 from PySide6.QtWidgets import *
 from PySide6.QtCharts import *
 from PySide6.QtGui import *
@@ -779,9 +779,47 @@ class TradeListWindow(QWidget):
         self.buywindow.showMaximized()
         self.buywindow.activateWindow()
 
+class NewsListTable(QTableWidget):
+    headers = ['Date','Topic']
+    news_data = None
+    tickertxt = None
+
+    def __init__(self):
+        super().__init__()
+        self.setColumnCount(len(self.headers))
+        self.setAlternatingRowColors(True)
+        header = self.horizontalHeader()
+        header.setSectionResizeMode(0,QHeaderView.ResizeMode.Stretch)
+        header.setSectionResizeMode(1,QHeaderView.ResizeMode.ResizeToContents)
+        self.setHorizontalHeaderLabels(self.headers)
+        self.update_list()
+
+    def update_list(self):
+        if self.tickertxt:
+            url = 'https://www.alphavantage.co/query?function=NEWS_SENTIMENT&tickers=' + self.tickertxt + '&apikey=' + settings.alphavantage_key + '&limit=5'
+            r = requests.get(url)
+            self.news_data = r.json()
+            print("News: ",self.news_data)
+            print("News url: ",url)
+            for feed in self.news_data['feed']:
+                curpos = self.rowCount()
+                self.insertRow(curpos)
+                self.setItem(curpos,0,QTableWidgetItem(str(datetime.strptime(feed['time_published'],'%Y%m%dT%H%M%S').date())))
+                self.setItem(curpos,1,QTableWidgetItem(feed['title']))
+
+    @Slot()
+    def open_link(self,item):
+        print('item:',item)
+        print('feed:',self.news_data['feed'][item])
+        targeturl = self.news_data['feed'][item]['url']
+        print('url:',targeturl)
+        QDesktopServices.openUrl(QUrl(targeturl))
+
 class BuyWindow(QWidget):
     def __init__(self):
         super().__init__()
+        self.news_tab = NewsListTable()
+        self.news_tab.cellDoubleClicked.connect(self.news_tab.open_link)
         self.create_buy_form()
         self.create_info_box()
         self.create_chart()
@@ -1056,13 +1094,8 @@ class BuyWindow(QWidget):
             print("Ticker:",ticker.summary_detail)
             print("Ticker price:",ticker.price)
             print("Ticker events:",ticker.calendar_events)
-            print("Ticker news:",ticker.news())
-            url = 'https://www.alphavantage.co/query?function=NEWS_SENTIMENT&tickers=' + tickertxt + '&apikey=' + settings.alphavantage_key + '&limit=5'
-            r = requests.get(url)
-            news_data = r.json()
-            print("News: ",news_data)
-            print("News url: ",url)
-            self.news_tab.setPlainText('\r'.join([ n['time_published'] + '  -  ' + n['title'] for n in news_data['feed'] ]))
+            self.news_tab.tickertxt = tickertxt
+            self.news_tab.update_list()
             self.marketcap_label.setText(str(ticker.summary_detail[tickertxt]['marketCap']))
             self.volume24h_label.setText(str(ticker.summary_detail[tickertxt]['volume']))
             self.yearhigh_label.setText(str(ticker.summary_detail[tickertxt]['fiftyTwoWeekHigh']))
@@ -1135,7 +1168,6 @@ class BuyWindow(QWidget):
 
     
     def create_chart(self):
-        self.ticker_text.setText("BBBY")
         self._chart_group = QGroupBox("Chart")
         self.chart = QChart()
         self.volchart = QChart()
@@ -1153,7 +1185,6 @@ class BuyWindow(QWidget):
         self.chartview.setRenderHint(QPainter.Antialiasing)
         self.volchartview = QChartView(self.volchart)
         self.volchartview.setRenderHint(QPainter.Antialiasing)
-        self.news_tab = QPlainTextEdit()
         tab = QTabWidget()
         tab.addTab(self.chartview,'Chart')
         tab.addTab(self.volchartview,'Volume')
